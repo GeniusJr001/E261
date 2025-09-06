@@ -11,6 +11,9 @@ import subprocess
 import re
 import datetime
 import hashlib
+import platform
+import fastapi
+import pydantic
 from functools import lru_cache
 try:
     from dateutil import parser as dateutil_parser
@@ -353,8 +356,11 @@ BACKEND_URL = os.getenv('BACKEND_URL', 'http://127.0.0.1:8000')
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://geniusjr001.github.io",           # FIXED: removed 'github.com/'
-    "https://geniusjr001.github.io/E261",      # FIXED: removed 'github.com/'
+    "https://geniusjr001.github.io",
+    "https://geniusjr001.github.io/E261",
+    "https://github.com",
+    "https://*.github.io",
+    "*",  # Temporarily allow all origins for debugging
     FRONTEND_URL,  # Environment-specific URL
 ]
 
@@ -363,7 +369,7 @@ origins = list(set(filter(None, origins)))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Temporarily allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -399,9 +405,6 @@ class ClaimPayload(BaseModel):
 
 @app.get("/health")
 def health():
-    import platform
-    import fastapi
-    import pydantic
     return {
         "status": "ok",
         "python_version": platform.python_version(),
@@ -509,17 +512,23 @@ def cached_tts(text: str) -> bytes:
     TTS with simple caching. Returns audio bytes.
     Cache key is MD5 hash of text.
     """
+    print(f"[cached_tts] Starting TTS for text: {text[:50]}...")  # Debug logging
     try:
         # Create cache key
         text_hash = hashlib.md5(text.encode()).hexdigest()
+        print(f"[cached_tts] Text hash: {text_hash}")  # Debug logging
         
         # Check cache first
         if text_hash in TTS_CACHE:
+            print(f"[cached_tts] Cache hit! Returning cached audio")  # Debug logging
             return TTS_CACHE[text_hash]
         
         # Check environment variables
         if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+            print(f"[cached_tts] Missing env vars - API Key: {bool(ELEVEN_API_KEY)}, Voice ID: {bool(ELEVEN_VOICE_ID)}")
             raise HTTPException(status_code=500, detail="ELEVEN_API_KEY or ELEVEN_VOICE_ID not set")
+        
+        print(f"[cached_tts] Making API call to ElevenLabs...")  # Debug logging
         
         # Make API call to ElevenLabs
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
@@ -532,7 +541,10 @@ def cached_tts(text: str) -> bytes:
         
         resp = requests.post(url, headers=headers, json=body, timeout=30)
         
+        print(f"[cached_tts] ElevenLabs response: {resp.status_code}")  # Debug logging
+        
         if resp.status_code != 200:
+            print(f"[cached_tts] ElevenLabs error: {resp.text}")  # Debug logging
             error_detail = {
                 "eleven_error": resp.text,
                 "status_code": resp.status_code,
@@ -541,6 +553,7 @@ def cached_tts(text: str) -> bytes:
             raise HTTPException(status_code=502, detail=error_detail)
         
         audio_bytes = resp.content
+        print(f"[cached_tts] Received audio: {len(audio_bytes)} bytes")  # Debug logging
         
         # Cache the result (simple cache, consider size limits in production)
         TTS_CACHE[text_hash] = audio_bytes
@@ -551,6 +564,7 @@ def cached_tts(text: str) -> bytes:
         # Re-raise HTTPExceptions as-is
         raise
     except Exception as e:
+        print(f"[cached_tts] Unexpected error: {str(e)}")  # Debug logging
         # Catch any other unexpected errors
         import traceback
         error_detail = {
@@ -566,20 +580,28 @@ def tts(payload: dict):
     Expects JSON: {"text": "your text here"}
     Returns: audio/mpeg stream
     """
+    print(f"[TTS] Endpoint called with payload: {payload}")  # Debug logging
     try:
         text = payload.get("text", "").strip()
         if not text:
+            print("[TTS] Error: Empty text provided")
             raise HTTPException(status_code=400, detail="missing text")
+        
+        print(f"[TTS] Processing text: {text[:50]}...")  # Debug logging
         
         # Call cached TTS function
         audio_bytes = cached_tts(text)
         
+        print(f"[TTS] Successfully generated audio: {len(audio_bytes)} bytes")  # Debug logging
+        
         return StreamingResponse(iter([audio_bytes]), media_type="audio/mpeg")
         
-    except HTTPException:
+    except HTTPException as he:
+        print(f"[TTS] HTTPException: {he.detail}")  # Debug logging
         # Re-raise HTTPExceptions from cached_tts
         raise
     except Exception as e:
+        print(f"[TTS] Unexpected error: {str(e)}")  # Debug logging
         # Catch any other unexpected errors
         import traceback
         error_detail = {
