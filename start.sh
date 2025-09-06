@@ -5,10 +5,7 @@ echo "=== E261 Voice Backend Startup ==="
 echo "Python version:"
 python3 --version
 
-echo "Installing/updating dependencies..."
-python3 -m pip install -r requirements.txt
-
-echo "Verifying critical packages..."
+echo "Verifying critical packages are available..."
 python3 -c "import uvicorn; print('✓ uvicorn version:', uvicorn.__version__)"
 python3 -c "import fastapi; print('✓ fastapi version:', fastapi.__version__)"
 python3 -c "import sys; print('✓ Python path:', sys.path[0:3])"
