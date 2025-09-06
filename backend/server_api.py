@@ -322,7 +322,7 @@ def sanitize_passenger_name(name: str) -> str:
     return cleaned
 
 # new import of shared helpers
-from helpers import CLAIM_FIELDS, quick_pattern_extract
+from .helpers import CLAIM_FIELDS, quick_pattern_extract
 
 # env
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
@@ -544,7 +544,7 @@ def submit_claim(payload: ClaimPayload):
         raise HTTPException(status_code=500, detail="Zoho env vars not set")
 
     # lazy import so server still starts without Zoho env set
-    from zoho_client import ZohoCRM
+    from .zoho_client import ZohoCRM
 
     zoho = ZohoCRM()
     data = payload.data
@@ -1135,7 +1135,7 @@ async def submit_final_claim(request: Request):
             }
         
         # Submit to Zoro CRM
-        from zoho_client import ZohoCRM
+        from .zoho_client import ZohoCRM
         zoho = ZohoCRM()
         
         # Create contact
