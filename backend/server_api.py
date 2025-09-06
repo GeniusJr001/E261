@@ -575,14 +575,20 @@ def submit_claim(payload: ClaimPayload):
 # simple in-memory sessions: session_id -> collected dict
 _sessions: Dict[str, Dict[str, Optional[str]]] = {}
 
-# allow importing prompts from scripts safely
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts")))
+# allow importing prompts from scripts safely (optional)
+main_convo = None
+scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
+if os.path.exists(scripts_path):
+    sys.path.insert(0, scripts_path)
+
 try:
-    import main_convo
-except Exception as e:
+    from . import main_convo
+except ImportError as e:
+    print(f"Warning: main_convo module not found: {e}")
     main_convo = None
-    print("ERROR: failed to import scripts/main_convo.py:", e)
-    traceback.print_exc()
+except Exception as e:
+    print(f"Error importing main_convo: {e}")
+    main_convo = None
 
 @app.post("/conversation/start")
 def conversation_start():
@@ -590,18 +596,24 @@ def conversation_start():
     _sessions[session_id] = {k: None for k in CLAIM_FIELDS}
     _sessions[session_id]["claim_status_step"] = 0
 
-    # Friendly intro followed by the open-ended prompt
-    intro_line = (
+    # Use main_convo if available, otherwise fallback to hardcoded
+    if main_convo:
+        initial_prompt = main_convo.get_initial_prompt()
+        timeout = main_convo.get_timeout("open_ended")
+    else:
+        # Fallback to hardcoded values
+        intro_line = (
         "Hi, welcome to 261 Claims. I understand how frustrating flight delays can be, "
         "and I’m here to help you resolve it. Let’s get started."
-    )
-    open_ended = (
+        )
+        open_ended = (
         "Can you explain what really happened? You can include as many details as you want, "
         "such as your name, flight number, airline, and the delay duration."
-    )
-    initial_prompt = f"{intro_line} {open_ended}"
+        )
+        initial_prompt = f"{intro_line} {open_ended}"
+        timeout = 10000
 
-    return {"session_id": session_id, "prompt": initial_prompt, "silence_timeout": 10000}  # 10s for open-ended
+    return {"session_id": session_id, "prompt": initial_prompt, "silence_timeout": timeout}
 
 @app.post("/conversation/respond")
 async def conversation_respond(session_id: str, request: Request, file: UploadFile | None = File(None), payload: dict | str | None = Body(None)):
@@ -894,25 +906,33 @@ async def conversation_respond(session_id: str, request: Request, file: UploadFi
                 newly_filled = True
                 next_field = next((k for k, v in collected.items() if v is None), None)
 
-        # Prompts map
-        prompts = {
-            "Passenger Name": "What's your full name as it appears on your ticket?",
-            "Contact Email": "It's quite unfair you had to go through all of that, please type in your email address into the text bar, We'll use it to contact you about your claim.",
-            "Flight Number": "What's your flight number? It usually looks like BA123.",
-            "Flight Date": "When was your flight?",
-            "Airline": "Which airline were you flying with?",
-            "Departure Airport": "Which airport did you depart from?",
-            "Arrival Airport": "Which airport were you supposed to arrive at?",
-            "Delay Hours": "About how many hours was your flight delayed?",
-            "Airline Response": "What did the airline say about your claim?",
-            "Claim Status": "What's the current status of the claim?"
-        }
+        # Get prompts from main_convo if available, otherwise use hardcoded
+        if main_convo:
+            prompts = main_convo.FIELD_PROMPTS
+        else:
+            # Fallback to hardcoded prompts
+            prompts = {
+                "Passenger Name": "What's your full name as it appears on your ticket?",
+                "Contact Email": "It's quite unfair you had to go through all of that, please type in your email address into the text bar, We'll use it to contact you about your claim.",
+                "Flight Number": "What's your flight number? It usually looks like BA123.",
+                "Flight Date": "When was your flight?",
+                "Airline": "Which airline were you flying with?",
+                "Departure Airport": "Which airport did you depart from?",
+                "Arrival Airport": "Which airport were you supposed to arrive at?",
+                "Delay Hours": "About how many hours was your flight delayed?",
+                "Airline Response": "What did the airline say about your claim?",
+                "Claim Status": "What's the current status of the claim?"
+            }
 
         # Decide next prompt and timeout
         if next_field is None:
             done = True
-            next_prompt = "Thank you. I have all the details. Please wait while I prepare your claim review..."
-            silence_timeout = 2500
+            if main_convo:
+                next_prompt = main_convo.get_completion_message()
+                silence_timeout = main_convo.get_timeout("completion")
+            else:
+                next_prompt = "Thank you. I have all the details. Please wait while I prepare your claim review..."
+                silence_timeout = 2500
             return {
                 "session_id": session_id, 
                 "next_prompt": next_prompt, 
@@ -925,53 +945,79 @@ async def conversation_respond(session_id: str, request: Request, file: UploadFi
             done = False
             silence_timeout = 2500
             if email_invalid:
-                next_prompt = "That doesn't look like a valid email address. Please provide a valid email (for example: name@example.com)."
+                if main_convo:
+                    next_prompt = main_convo.get_invalid_email_message()
+                else:
+                    next_prompt = "That doesn't look like a valid email address. Please provide a valid email (for example: name@example.com)."
             elif next_field == "Claim Status":
                 step = collected.get("claim_status_step", 0)
-                if step == 0:
-                    next_prompt = "Have you submitted a claim before?"
-                    collected["claim_status_step"] = 1
-                elif step == 1:
-                    if "yes" in user_text.lower():
-                        next_prompt = "Have you received compensation?"
-                        collected["claim_status_step"] = 2
-                    elif "no" in user_text.lower():
-                        collected["Claim Status"] = "New Claim"
+                if main_convo:
+                    prompt_result = main_convo.get_claim_status_prompt(step, user_text)
+                    if len(prompt_result) == 3:  # completion case
+                        next_prompt, new_step, status = prompt_result
+                        collected["Claim Status"] = status
                         done = True
-                        next_prompt = "Thank you. I have all the details."
-                    else:
-                        next_prompt = "Please answer yes or no. Have you submitted a claim before?"
-                elif step == 2:
-                    if "yes" in user_text.lower():
-                        collected["Claim Status"] = "Resolved"
-                        done = True
-                        next_prompt = "Thank you. I have all the details."
-                    elif "no" in user_text.lower():
-                        collected["Claim Status"] = "Pending"
-                        done = True
-                        next_prompt = "Thank you. I have all the details."
-                    else:
-                        next_prompt = "Please answer yes or no. Have you received compensation?"
-            else:
-                if newly_filled:
-                    next_prompt = prompts.get(next_field, f"Could you tell me your {next_field.lower()}?")
+                    else:  # continue case
+                        next_prompt, new_step = prompt_result
+                        if new_step is not None:
+                            collected["claim_status_step"] = new_step
                 else:
-                    examples = {
-                        "Passenger Name": "Please provide your full name as it appears on your ticket (e.g., John Doe).",
-                        "Contact Email": "Please provide your email address (for example: name@example.com).",
-                        "Flight Number": "Please provide your flight number (for example: BA123).",
-                        "Flight Date": "Please provide the date of the flight (Year, Month & Date , an example is., 2023, July 15th).",
-                        "Airline": "Please provide the airline name (for example: British Airways).",
-                        "Departure Airport": "Please provide the departure airport (for example: London Heathrow).",
-                        "Arrival Airport": "Please provide the arrival airport (for example: Amsterdam Schiphol).",
-                        "Delay Hours": "Please tell me the delay duration in hours (for example: 3).",
-                        "Airline Response": "Please describe how the airline responded (for example: they offered meal vouchers)."
-                    }
-                    specific = examples.get(next_field)
-                    if specific:
-                        next_prompt = f"Sorry, I didn't catch that. {specific} You also can use the text bar."
+                    # Fallback to hardcoded logic
+                    if step == 0:
+                        next_prompt = "Have you submitted a claim before?"
+                        collected["claim_status_step"] = 1
+                    elif step == 1:
+                        if "yes" in user_text.lower():
+                            next_prompt = "Have you received compensation?"
+                            collected["claim_status_step"] = 2
+                        elif "no" in user_text.lower():
+                            collected["Claim Status"] = "New Claim"
+                            done = True
+                            next_prompt = "Thank you. I have all the details."
+                        else:
+                            next_prompt = "Please answer yes or no. Have you submitted a claim before?"
+                    elif step == 2:
+                        if "yes" in user_text.lower():
+                            collected["Claim Status"] = "Resolved"
+                            done = True
+                            next_prompt = "Thank you. I have all the details."
+                        elif "no" in user_text.lower():
+                            collected["Claim Status"] = "Pending"
+                            done = True
+                            next_prompt = "Thank you. I have all the details."
+                        else:
+                            next_prompt = "Please answer yes or no. Have you received compensation?"
+            else:
+                if main_convo:
+                    next_prompt = main_convo.get_field_prompt(next_field, newly_filled)
+                else:
+                    # Fallback to hardcoded logic
+                    if newly_filled:
+                        next_prompt = prompts.get(next_field, f"Could you tell me your {next_field.lower()}?")
                     else:
-                        next_prompt = f"Could you please provide your {next_field.lower()}?"
+                        examples = {
+                            "Passenger Name": "Please provide your full name as it appears on your ticket (e.g., John Doe).",
+                            "Contact Email": "Please provide your email address (for example: name@example.com).",
+                            "Flight Number": "Please provide your flight number (for example: BA123).",
+                            "Flight Date": "Please provide the date of the flight (Year, Month & Date , an example is., 2023, July 15th).",
+                            "Airline": "Please provide the airline name (for example: British Airways).",
+                            "Departure Airport": "Please provide the departure airport (for example: London Heathrow).",
+                            "Arrival Airport": "Please provide the arrival airport (for example: Amsterdam Schiphol).",
+                            "Delay Hours": "Please tell me the delay duration in hours (for example: 3).",
+                            "Airline Response": "Please describe how the airline responded (for example: they offered meal vouchers)."
+                        }
+                        specific = examples.get(next_field)
+                        if specific:
+                            next_prompt = f"Sorry, I didn't catch that. {specific} You also can use the text bar."
+                        else:
+                            next_prompt = f"Could you please provide your {next_field.lower()}?"
+
+        # Set timeout if not already set
+        if 'silence_timeout' not in locals():
+            if main_convo:
+                silence_timeout = main_convo.get_timeout("standard")
+            else:
+                silence_timeout = 2500
 
         # persist session
         _sessions[session_id] = collected
@@ -981,7 +1027,13 @@ async def conversation_respond(session_id: str, request: Request, file: UploadFi
     except Exception as e:
         print(f"Error in conversation_respond: {e}")
         traceback.print_exc()
-        return {"error": str(e), "session_id": session_id, "next_prompt": "An error occurred. Please try again.", "collected": {}, "done": False, "silence_timeout": 2500}
+        if main_convo:
+            error_message = main_convo.get_error_message()
+            timeout = main_convo.get_timeout("standard")
+        else:
+            error_message = "An error occurred. Please try again."
+            timeout = 2500
+        return {"error": str(e), "session_id": session_id, "next_prompt": error_message, "collected": {}, "done": False, "silence_timeout": timeout}
 
 @app.get("/claim-review/{session_id}")
 def get_claim_review(session_id: str):
