@@ -398,6 +398,8 @@ class ClaimPayload(BaseModel):
 @app.get("/health")
 def health():
     import platform
+    import fastapi
+    import pydantic
     return {
         "status": "ok",
         "python_version": platform.python_version(),
