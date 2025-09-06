@@ -10,6 +10,8 @@ import mimetypes
 import subprocess
 import re
 import datetime
+import hashlib
+from functools import lru_cache
 try:
     from dateutil import parser as dateutil_parser
 except Exception:
@@ -499,42 +501,92 @@ def stt(file: UploadFile = File(...)):
         except Exception:
             pass
 
-import hashlib
-from functools import lru_cache
+# Simple in-memory cache for TTS audio
+TTS_CACHE = {}
 
-# Simple in-memory cache for TTS audio (key: hash of text, value: audio bytes)
-# Adjust maxsize based on memory; clear periodically if needed
-@lru_cache(maxsize=100)
 def cached_tts(text: str) -> bytes:
-    # Your existing TTS logic here
-    if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
-        raise HTTPException(status_code=500, detail="ELEVEN_API_KEY or ELEVEN_VOICE_ID not set")
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
-    headers = {
-        "xi-api-key": ELEVEN_API_KEY,
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-    }
-    body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
-    resp = requests.post(url, headers=headers, json=body, timeout=10)  # Shorter timeout
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail={"eleven_error": resp.text})
-    return resp.content
+    """
+    TTS with simple caching. Returns audio bytes.
+    Cache key is MD5 hash of text.
+    """
+    try:
+        # Create cache key
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        
+        # Check cache first
+        if text_hash in TTS_CACHE:
+            return TTS_CACHE[text_hash]
+        
+        # Check environment variables
+        if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+            raise HTTPException(status_code=500, detail="ELEVEN_API_KEY or ELEVEN_VOICE_ID not set")
+        
+        # Make API call to ElevenLabs
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
+        headers = {
+            "xi-api-key": ELEVEN_API_KEY,
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+        }
+        body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
+        
+        resp = requests.post(url, headers=headers, json=body, timeout=30)
+        
+        if resp.status_code != 200:
+            error_detail = {
+                "eleven_error": resp.text,
+                "status_code": resp.status_code,
+                "url": url
+            }
+            raise HTTPException(status_code=502, detail=error_detail)
+        
+        audio_bytes = resp.content
+        
+        # Cache the result (simple cache, consider size limits in production)
+        TTS_CACHE[text_hash] = audio_bytes
+        
+        return audio_bytes
+        
+    except HTTPException:
+        # Re-raise HTTPExceptions as-is
+        raise
+    except Exception as e:
+        # Catch any other unexpected errors
+        import traceback
+        error_detail = {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/tts")
 def tts(payload: dict):
-    text = payload.get("text", "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="missing text")
-    
-    # Remove this line to allow full text (or increase limit if needed for safety)
-    # text = text[:200]
-    
-    # Hash text for caching
-    text_hash = hashlib.md5(text.encode()).hexdigest()
-    audio_bytes = cached_tts(text)
-    
-    return StreamingResponse(iter([audio_bytes]), media_type="audio/mpeg")
+    """
+    Text-to-speech endpoint.
+    Expects JSON: {"text": "your text here"}
+    Returns: audio/mpeg stream
+    """
+    try:
+        text = payload.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="missing text")
+        
+        # Call cached TTS function
+        audio_bytes = cached_tts(text)
+        
+        return StreamingResponse(iter([audio_bytes]), media_type="audio/mpeg")
+        
+    except HTTPException:
+        # Re-raise HTTPExceptions from cached_tts
+        raise
+    except Exception as e:
+        # Catch any other unexpected errors
+        import traceback
+        error_detail = {
+            "error": f"TTS endpoint error: {str(e)}",
+            "traceback": traceback.format_exc()
+        }
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.post("/submit-claim")
 def submit_claim(payload: ClaimPayload):
