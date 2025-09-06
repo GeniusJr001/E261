@@ -30,7 +30,7 @@ Your environment variables have been configured and your server is ready for dep
 2. Connect your GitHub repository
 3. Configure:
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `cd backend && python -m uvicorn server_api:app --host 0.0.0.0 --port $PORT`
+   - **Start Command**: `cd backend && python3 -m uvicorn server_api:app --host 0.0.0.0 --port $PORT`
    - **Python Version**: `3.11.9`
 
 4. **Add Environment Variables** (copy these exactly):
