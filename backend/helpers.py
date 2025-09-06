@@ -1,6 +1,20 @@
 import re
 from typing import Dict, Any, Optional
 
+# Define the claim fields that need to be collected
+CLAIM_FIELDS = [
+    "Passenger Name",
+    "Contact Email", 
+    "Flight Number",
+    "Flight Date",
+    "Airline",
+    "Departure Airport",
+    "Arrival Airport", 
+    "Delay Hours",
+    "Airline Response",
+    "Claim Status"
+]
+
 def quick_pattern_extract(text: str) -> Dict[str, Any]:
     """
     Extract information from user text using regex patterns.
