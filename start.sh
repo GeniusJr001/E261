@@ -1,20 +1,17 @@
 #!/bin/bash
+set -e
 
-# Debug information
+echo "=== E261 Voice Backend Startup ==="
 echo "Python version:"
 python3 --version
-echo "Pip version:"
-python3 -m pip --version
 
-# Install dependencies
-pip install -r requirements.txt
+echo "Installing/updating dependencies..."
+python3 -m pip install -r requirements.txt
 
-# Verify critical packages are installed
-echo "Checking if uvicorn is installed:"
-python3 -c "import uvicorn; print('uvicorn found:', uvicorn.__version__)" || echo "uvicorn not found!"
-echo "Checking if fastapi is installed:"
-python3 -c "import fastapi; print('fastapi found:', fastapi.__version__)" || echo "fastapi not found!"
+echo "Verifying critical packages..."
+python3 -c "import uvicorn; print('✓ uvicorn version:', uvicorn.__version__)"
+python3 -c "import fastapi; print('✓ fastapi version:', fastapi.__version__)"
+python3 -c "import sys; print('✓ Python path:', sys.path[0:3])"
 
-# Start the server
-echo "Starting uvicorn..."
-python3 -m uvicorn backend.server_api:app --host 0.0.0.0 --port ${PORT:-8000}
+echo "Starting FastAPI server..."
+exec python3 -m uvicorn backend.server_api:app --host 0.0.0.0 --port ${PORT:-8000}
