@@ -397,7 +397,20 @@ class ClaimPayload(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    import platform
+    return {
+        "status": "ok",
+        "python_version": platform.python_version(),
+        "fastapi_version": fastapi.__version__,
+        "pydantic_version": pydantic.__version__,
+        "environment": {
+            "eleven_api_configured": bool(ELEVEN_API_KEY),
+            "eleven_voice_configured": bool(ELEVEN_VOICE_ID),
+            "zoho_enabled": ZOHO_ENABLED,
+            "frontend_url": FRONTEND_URL,
+            "backend_url": BACKEND_URL
+        }
+    }
 
 def _maybe_transcode_to_wav(src_path):
     """
