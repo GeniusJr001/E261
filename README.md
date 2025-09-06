@@ -1,6 +1,39 @@
-# E261 Voice Claims Backend
+# E261 Voice Claims - AI-Powered Flight Delay Claims
 
-## Deployment to Render
+A complete full-stack application for processing flight delay claims using AI voice technology.
+
+## 🌟 Live Application
+
+- **Frontend**: [E261 Voice Claims](https://geniusjr001.github.io/E261/) (GitHub Pages)
+- **Backend API**: [https://e261-6.onrender.com](https://e261-6.onrender.com) (Render)
+
+## 🏗️ Architecture
+
+### Frontend (`voice-intake/`)
+- **Technology**: HTML5, CSS3, JavaScript, Web Speech API
+- **Deployment**: GitHub Pages
+- **Features**: Voice recognition, real-time transcription, AI conversation flow
+
+### Backend (`backend/`)
+- **Technology**: FastAPI, Python 3.11.9, Pydantic
+- **Deployment**: Render
+- **Features**: STT/TTS with ElevenLabs, conversation management, claim processing
+
+## 🚀 Frontend Deployment (GitHub Pages)
+
+The frontend is automatically deployed to GitHub Pages when changes are pushed to the main branch.
+
+**Live URL**: `https://geniusjr001.github.io/E261/`
+
+### Local Development
+```bash
+# Serve the frontend locally
+cd voice-intake/dist
+python -m http.server 8080
+# Visit http://localhost:8080/voice_ai_website.html
+```
+
+## 🚀 Backend Deployment (Render)
 
 ### Prerequisites
 1. A Render account (https://render.com)
