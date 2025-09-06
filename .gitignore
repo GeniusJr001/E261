@@ -2,15 +2,11 @@
 .env
 backend/.env
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
+# Python build/dist (but allow voice-intake/dist)
 build/
 develop-eggs/
 dist/
+!voice-intake/dist/
 downloads/
 eggs/
 .eggs/

@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claim Review - 261 Claims</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .progress-bar {
+            background: rgba(255,255,255,0.2);
+            height: 8px;
+            border-radius: 4px;
+            margin-top: 20px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            background: white;
+            height: 100%;
+            width: 90%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            color: #1f2937;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 30px;
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            margin-right: 15px;
+            border-radius: 2px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group label {
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+
+        .form-group input,
+        .form-group textarea,
+        .form-group select {
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: white;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        .form-group textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        .upload-section {
+            background: #f8fafc;
+            border: 2px dashed #cbd5e1;
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .upload-section:hover {
+            border-color: #4f46e5;
+            background: #f1f5f9;
+        }
+
+        .upload-section.dragover {
+            border-color: #4f46e5;
+            background: #eef2ff;
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            color: #94a3b8;
+            margin-bottom: 15px;
+        }
+
+        .upload-text {
+            font-size: 1.1rem;
+            color: #64748b;
+            margin-bottom: 15px;
+        }
+
+        .upload-button {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .upload-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(79, 70, 229, 0.3);
+        }
+
+        .document-list {
+            margin-top: 20px;
+        }
+
+        .document-item {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .document-info {
+            flex: 1;
+        }
+
+        .document-name {
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .document-type {
+            font-size: 0.9rem;
+            color: #6b7280;
+        }
+
+        .document-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-delete {
+            background: #ef4444;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-delete:hover {
+            background: #dc2626;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 40px;
+            padding-top: 30px;
+            border-top: 2px solid #e5e7eb;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 200px;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 30px rgba(79, 70, 229, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 200px;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+            transform: translateY(-2px);
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f4f6;
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #dc2626;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            color: #166534;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .action-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>✈️ Claim Review</h1>
+            <p>Please review and confirm your flight delay claim details</p>
+            <div class="progress-bar">
+                <div class="progress-fill"></div>
+            </div>
+        </div>
+
+        <div class="content">
+            <div id="error-message" class="error" style="display: none;"></div>
+            <div id="success-message" class="success" style="display: none;"></div>
+
+            <form id="claim-form">
+                <!-- Personal Information Section -->
+                <div class="section">
+                    <h2 class="section-title">Personal Information</h2>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="passenger-name">Full Name *</label>
+                            <input type="text" id="passenger-name" name="Passenger Name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="contact-email">Email Address *</label>
+                            <input type="email" id="contact-email" name="Contact Email" required>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Flight Information Section -->
+                <div class="section">
+                    <h2 class="section-title">Flight Information</h2>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="flight-number">Flight Number *</label>
+                            <input type="text" id="flight-number" name="Flight Number" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="flight-date">Flight Date *</label>
+                            <input type="date" id="flight-date" name="Flight Date" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="airline">Airline *</label>
+                            <input type="text" id="airline" name="Airline" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="delay-hours">Delay Duration (Hours) *</label>
+                            <input type="number" id="delay-hours" name="Delay Hours" min="0" max="48" step="0.5" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="departure-airport">Departure Airport *</label>
+                            <input type="text" id="departure-airport" name="Departure Airport" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="arrival-airport">Arrival Airport *</label>
+                            <input type="text" id="arrival-airport" name="Arrival Airport" required>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Claim Details Section -->
+                <div class="section">
+                    <h2 class="section-title">Claim Details</h2>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="airline-response">Airline Response</label>
+                            <textarea id="airline-response" name="Airline Response" placeholder="Describe how the airline responded to your claim..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="claim-status">Claim Status</label>
+                            <select id="claim-status" name="Claim Status">
+                                <option value="">Select status...</option>
+                                <option value="New Claim">New Claim</option>
+                                <option value="Pending">Pending</option>
+                                <option value="Resolved">Resolved</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Document Upload Section -->
+                <div class="section">
+                    <h2 class="section-title">Supporting Documents</h2>
+                    <div class="upload-section" id="upload-area">
+                        <div class="upload-icon">📎</div>
+                        <div class="upload-text">
+                            Drag and drop files here or click to browse
+                        </div>
+                        <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 15px;">
+                            Supported: PDF, JPG, PNG (Max 10MB each)
+                        </div>
+                        <input type="file" id="file-input" accept=".pdf,.jpg,.jpeg,.png,.gif" multiple style="display: none;">
+                        <button type="button" class="upload-button" onclick="document.getElementById('file-input').click()">
+                            Choose Files
+                        </button>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 20px;">
+                        <label for="document-type">Document Type</label>
+                        <select id="document-type">
+                            <option value="passport">Passport</option>
+                            <option value="boarding_pass">Boarding Pass</option>
+                            <option value="ticket">Flight Ticket</option>
+                            <option value="receipt">Receipt</option>
+                            <option value="correspondence">Airline Correspondence</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+
+                    <div id="document-list" class="document-list"></div>
+                </div>
+
+                <div class="action-buttons">
+                    <button type="button" class="btn-secondary" onclick="goBack()">
+                        ← Back to Voice Chat
+                    </button>
+                    <button type="submit" class="btn-primary">
+                        Submit Claim →
+                    </button>
+                </div>
+            </form>
+
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Submitting your claim...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Backend URL detection
+        const BACKEND_URL = (() => {
+            const hostname = location.hostname;
+            
+            // GitHub Pages production
+            if (hostname === 'geniusjr001.github.io') {
+                return 'https://e261-backend.onrender.com';
+            }
+            
+            // Local development
+            if (hostname === 'localhost' || hostname === '127.0.0.1') {
+                return 'http://127.0.0.1:8000';
+            }
+            
+            // Fallback
+            return 'https://e261-backend.onrender.com';
+        })();
+
+        let sessionId = null;
+        let uploadedDocuments = [];
+
+        // Get session ID from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        sessionId = urlParams.get('session_id');
+
+        if (!sessionId) {
+            showError('No session ID found. Please start from the voice chat.');
+        } else {
+            loadClaimData();
+        }
+
+        async function loadClaimData() {
+            try {
+                const response = await fetch(`${BACKEND_URL}/claim-review/${sessionId}`);
+                if (!response.ok) throw new Error('Failed to load claim data');
+                
+                const data = await response.json();
+                populateForm(data.collected_data);
+                
+                // Load existing documents
+                loadDocuments();
+            } catch (error) {
+                showError('Failed to load claim data: ' + error.message);
+            }
+        }
+
+        function populateForm(data) {
+            // Map the data to form fields
+            const fieldMapping = {
+                'Passenger Name': 'passenger-name',
+                'Contact Email': 'contact-email',
+                'Flight Number': 'flight-number',
+                'Flight Date': 'flight-date',
+                'Airline': 'airline',
+                'Delay Hours': 'delay-hours',
+                'Departure Airport': 'departure-airport',
+                'Arrival Airport': 'arrival-airport',
+                'Airline Response': 'airline-response',
+                'Claim Status': 'claim-status'
+            };
+
+            for (const [dataKey, elementId] of Object.entries(fieldMapping)) {
+                const element = document.getElementById(elementId);
+                if (element && data[dataKey]) {
+                    element.value = data[dataKey];
+                }
+            }
+        }
+
+        async function loadDocuments() {
+            try {
+                const response = await fetch(`${BACKEND_URL}/documents/${sessionId}`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                uploadedDocuments = data.documents || [];
+                renderDocuments();
+            } catch (error) {
+                console.error('Failed to load documents:', error);
+            }
+        }
+
+        function renderDocuments() {
+            const container = document.getElementById('document-list');
+            container.innerHTML = '';
+
+            uploadedDocuments.forEach(doc => {
+                const docElement = document.createElement('div');
+                docElement.className = 'document-item';
+                docElement.innerHTML = `
+                    <div class="document-info">
+                        <div class="document-name">${doc.original_name}</div>
+                        <div class="document-type">${doc.document_type}</div>
+                    </div>
+                    <div class="document-actions">
+                        <button type="button" class="btn-delete" onclick="deleteDocument('${doc.filename}')">
+                            Delete
+                        </button>
+                    </div>
+                `;
+                container.appendChild(docElement);
+            });
+        }
+
+        // File upload handling
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        async function handleFiles(files) {
+            for (const file of files) {
+                await uploadFile(file);
+            }
+        }
+
+        async function uploadFile(file) {
+            const documentType = document.getElementById('document-type').value;
+            
+            // Validate file
+            if (file.size > 10 * 1024 * 1024) {
+                showError(`File ${file.name} is too large. Maximum size is 10MB.`);
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('document_type', documentType);
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/upload-document/${sessionId}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Upload failed');
+                }
+
+                const result = await response.json();
+                showSuccess(`${file.name} uploaded successfully!`);
+                
+                // Reload documents
+                loadDocuments();
+                
+            } catch (error) {
+                showError(`Failed to upload ${file.name}: ${error.message}`);
+            }
+        }
+
+        async function deleteDocument(filename) {
+            if (!confirm('Are you sure you want to delete this document?')) return;
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/document/${sessionId}/${filename}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('Delete failed');
+
+                showSuccess('Document deleted successfully!');
+                loadDocuments();
+            } catch (error) {
+                showError('Failed to delete document: ' + error.message);
+            }
+        }
+
+        // Form submission
+        document.getElementById('claim-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData(e.target);
+            const claimData = {};
+            
+            for (const [key, value] of formData.entries()) {
+                claimData[key] = value;
+            }
+
+            // Show loading
+            document.getElementById('loading').style.display = 'block';
+            e.target.style.display = 'none';
+
+            try {
+                const response = await fetch(`${BACKEND_URL}/claim-submit-final`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        claim_data: claimData
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Submission failed');
+                }
+
+                const result = await response.json();
+                
+                // Show success and redirect
+                showSuccess(`Claim submitted successfully! Claim ID: ${result.claim_id}`);
+                
+                setTimeout(() => {
+                    // Redirect to a success page or back to home
+                    window.location.href = '/';
+                }, 3000);
+
+            } catch (error) {
+                showError('Failed to submit claim: ' + error.message);
+                
+                // Show form again
+                document.getElementById('loading').style.display = 'none';
+                e.target.style.display = 'block';
+            }
+        });
+
+        function goBack() {
+            if (confirm('Are you sure you want to go back? Any changes will be lost.')) {
+                window.location.href = `/voice_ai_website.html?session_id=${sessionId}`;
+            }
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.getElementById('success-message');
+            successDiv.textContent = message;
+            successDiv.style.display = 'block';
+            setTimeout(() => {
+                successDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        console.log('[CLAIM-REVIEW] Initialized with session ID:', sessionId);
+        console.log('[CLAIM-REVIEW] Using backend URL:', BACKEND_URL);
+    </script>
+</body>
+</html>
