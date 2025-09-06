@@ -1,0 +1,30 @@
+# GitHub Pages Configuration
+# This file ensures proper GitHub Pages deployment
+
+# Include all files and directories for GitHub Pages
+include:
+  - voice-intake/
+  - backend/
+  - .github/
+
+# Exclude unnecessary files
+exclude:
+  - .git/
+  - .env
+  - "*.backup"
+  
+# Set the source directory
+source: .
+
+# Enable GitHub Pages
+plugins:
+  - jekyll-relative-links
+
+# Relative links configuration
+relative_links:
+  enabled: true
+  collections: false
+
+# Markdown settings
+markdown: kramdown
+highlighter: rouge
