@@ -413,9 +413,25 @@ def health():
         "environment": {
             "eleven_api_configured": bool(ELEVEN_API_KEY),
             "eleven_voice_configured": bool(ELEVEN_VOICE_ID),
+            "eleven_api_key_length": len(ELEVEN_API_KEY) if ELEVEN_API_KEY else 0,
+            "eleven_voice_id_length": len(ELEVEN_VOICE_ID) if ELEVEN_VOICE_ID else 0,
             "zoho_enabled": ZOHO_ENABLED,
             "frontend_url": FRONTEND_URL,
             "backend_url": BACKEND_URL
+        }
+    }
+
+@app.get("/debug-env")
+def debug_env():
+    """Debug endpoint to check environment variables"""
+    return {
+        "eleven_api_key_present": bool(ELEVEN_API_KEY),
+        "eleven_api_key_length": len(ELEVEN_API_KEY) if ELEVEN_API_KEY else 0,
+        "eleven_voice_id_present": bool(ELEVEN_VOICE_ID),
+        "eleven_voice_id_value": ELEVEN_VOICE_ID if ELEVEN_VOICE_ID else "None",
+        "environment_vars": {
+            "ELEVEN_API_KEY": "SET" if os.getenv("ELEVEN_API_KEY") else "NOT_SET",
+            "ELEVEN_VOICE_ID": "SET" if os.getenv("ELEVEN_VOICE_ID") else "NOT_SET",
         }
     }
 
