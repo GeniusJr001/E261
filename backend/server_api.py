@@ -329,6 +329,10 @@ def sanitize_passenger_name(name: str) -> str:
 # new import of shared helpers
 from .helpers import CLAIM_FIELDS, quick_pattern_extract
 
+# Load environment variables early so globals below pick them up
+from dotenv import load_dotenv
+load_dotenv()
+
 # env
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
 #ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "large")  # adapt if needed
@@ -343,8 +347,6 @@ ZOHO_ENABLED = bool(os.getenv("ZOHO_CLIENT_ID") and os.getenv("ZOHO_CLIENT_SECRE
 app = FastAPI(title="E261 voice backend API")
 
 # Enable CORS for frontend during development
-from dotenv import load_dotenv
-
 # Load environment variables
 load_dotenv()
 
