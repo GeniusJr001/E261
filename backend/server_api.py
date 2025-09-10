@@ -369,7 +369,7 @@ origins = list(set(filter(None, origins)))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Temporarily allow all origins
+    allow_origins=origins,  # Temporarily allow all origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -523,9 +523,27 @@ def stt(file: UploadFile = File(...)):
 # Simple in-memory cache for TTS audio
 TTS_CACHE = {}
 
-def cached_tts(text: str) -> bytes:
+def _make_dummy_mp3():
+    # Minimal MP3-like header + silence padding for fallback
+    return b"\xff\xfb\x90\x00" + b"\x00" * 1024
+
+
+def _detect_media_type_from_bytes(b: bytes) -> str:
+    # Simple magic checks: WAV (RIFF), MP3 (ID3 or 0xFF 0xFB frame)
+    if len(b) >= 12 and b[0:4] == b"RIFF" and b[8:12] == b"WAVE":
+        return "audio/wav"
+    if len(b) >= 3 and b[0:3] == b"ID3":
+        return "audio/mpeg"
+    # Check for MP3 frame sync (0xFF Ex)
+    if len(b) >= 2 and (b[0] & 0xFF) == 0xFF and (b[1] & 0xE0) == 0xE0:
+        return "audio/mpeg"
+    # fallback
+    return "application/octet-stream"
+
+
+def cached_tts(text: str) -> tuple[bytes, str]:
     """
-    TTS with simple caching. Returns audio bytes.
+    TTS with simple caching. Returns (audio bytes, media_type).
     Cache key is MD5 hash of text.
     """
     print(f"[cached_tts] Starting TTS for text: {text[:50]}...")  # Debug logging
@@ -533,54 +551,67 @@ def cached_tts(text: str) -> bytes:
         # Create cache key
         text_hash = hashlib.md5(text.encode()).hexdigest()
         print(f"[cached_tts] Text hash: {text_hash}")  # Debug logging
-        
+
         # Check cache first
         if text_hash in TTS_CACHE:
-            print(f"[cached_tts] Cache hit! Returning cached audio")  # Debug logging
-            return TTS_CACHE[text_hash]
-        
+            cached = TTS_CACHE[text_hash]
+            # cached may be either bytes (old style) or tuple (bytes, media_type)
+            if isinstance(cached, tuple) and len(cached) == 2:
+                print(f"[cached_tts] Cache hit (tuple)! Returning cached audio")
+                return cached
+            else:
+                # detect media type for legacy cache entries
+                media = _detect_media_type_from_bytes(cached)
+                print(f"[cached_tts] Cache hit (legacy bytes). Detected media: {media}")
+                return cached, media
+
         # Check environment variables
         print(f"[cached_tts] Checking env vars - API Key: {bool(ELEVEN_API_KEY)}, Voice ID: {bool(ELEVEN_VOICE_ID)}")
         if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
             print(f"[cached_tts] Missing env vars - API Key: {bool(ELEVEN_API_KEY)}, Voice ID: {bool(ELEVEN_VOICE_ID)}")
             # Return dummy audio instead of failing
-            dummy_audio = b'\xff\xfb\x90\x00' + b'\x00' * 1000
+            dummy_audio = _make_dummy_mp3()
             print(f"[cached_tts] Returning dummy audio due to missing env vars")
-            return dummy_audio
-        
+            return dummy_audio, "audio/mpeg"
+
         print(f"[cached_tts] Making API call to ElevenLabs...")  # Debug logging
         print(f"[cached_tts] Voice ID: {ELEVEN_VOICE_ID}")  # Debug logging
         print(f"[cached_tts] API Key length: {len(ELEVEN_API_KEY)}")  # Debug logging
-        
+
         # Make API call to ElevenLabs
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
         headers = {
             "xi-api-key": ELEVEN_API_KEY,
-            "Accept": "audio/mpeg",
+            "Accept": "audio/mpeg, audio/wav, */*",
             "Content-Type": "application/json",
         }
         body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
-        
+
         print(f"[cached_tts] Making request to: {url}")  # Debug logging
         resp = requests.post(url, headers=headers, json=body, timeout=30)
-        
+
         print(f"[cached_tts] ElevenLabs response: {resp.status_code}")  # Debug logging
-        
+
         if resp.status_code != 200:
-            print(f"[cached_tts] ElevenLabs error: {resp.text}")  # Debug logging
+            print(f"[cached_tts] ElevenLabs error: {resp.status_code} {resp.text[:200]}")  # Debug logging
             # Return dummy audio instead of failing completely
-            dummy_audio = b'\xff\xfb\x90\x00' + b'\x00' * 1000
+            dummy_audio = _make_dummy_mp3()
             print(f"[cached_tts] Returning dummy audio due to ElevenLabs error")
-            return dummy_audio
-        
+            return dummy_audio, "audio/mpeg"
+
         audio_bytes = resp.content
-        print(f"[cached_tts] Received audio: {len(audio_bytes)} bytes")  # Debug logging
-        
-        # Cache the result (simple cache, consider size limits in production)
-        TTS_CACHE[text_hash] = audio_bytes
-        
-        return audio_bytes
-        
+        media_type = resp.headers.get("Content-Type") or _detect_media_type_from_bytes(audio_bytes)
+        # Normalize common content-type values
+        if media_type and ";" in media_type:
+            media_type = media_type.split(";")[0].strip()
+
+        print(f"[cached_tts] Received audio: {len(audio_bytes)} bytes, media_type={media_type}")  # Debug logging
+
+        # Cache the result as tuple
+        TTS_CACHE[text_hash] = (audio_bytes, media_type)
+
+        return audio_bytes, media_type
+
     except HTTPException:
         # Re-raise HTTPExceptions as-is
         raise
@@ -589,9 +620,9 @@ def cached_tts(text: str) -> bytes:
         import traceback
         traceback.print_exc()
         # Return dummy audio instead of failing completely
-        dummy_audio = b'\xff\xfb\x90\x00' + b'\x00' * 1000
+        dummy_audio = _make_dummy_mp3()
         print(f"[cached_tts] Returning dummy audio due to exception")
-        return dummy_audio
+        return dummy_audio, "audio/mpeg"
 
 @app.post("/tts-test")
 def tts_test(payload: dict):
@@ -632,12 +663,12 @@ def tts(payload: dict):
         
         print(f"[TTS] Processing text: {text[:50]}...")  # Debug logging
         
-        # Call cached TTS function
-        audio_bytes = cached_tts(text)
-        
-        print(f"[TTS] Successfully generated audio: {len(audio_bytes)} bytes")  # Debug logging
-        
-        return StreamingResponse(iter([audio_bytes]), media_type="audio/mpeg")
+    # Call cached TTS function
+    audio_bytes, media_type = cached_tts(text)
+
+    print(f"[TTS] Successfully generated audio: {len(audio_bytes)} bytes, media_type={media_type}")  # Debug logging
+
+    return StreamingResponse(iter([audio_bytes]), media_type=media_type or "application/octet-stream")
         
     except HTTPException as he:
         print(f"[TTS] HTTPException: {he.detail}")  # Debug logging
