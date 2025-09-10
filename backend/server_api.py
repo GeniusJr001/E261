@@ -366,6 +366,8 @@ origins = [
     "https://geniusjr001.github.io/E261",
     "https://github.com",
     "https://*.github.io",
+    "https://e261-voice-backend.onrender.com",
+    "https://localhost:3000",
     "*",  # Temporarily allow all origins for debugging
     FRONTEND_URL,  # Environment-specific URL
 ]
@@ -375,15 +377,7 @@ origins = list(set(filter(None, origins)))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000", 
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "https://localhost:3000",
-+       "https://geniusjr001.github.io",
-+       "https://e261-voice-backend.onrender.com"
-    ], # Temporarily allow this origins
+    allow_origins=origins, # Temporarily allow this origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
