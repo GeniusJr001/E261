@@ -4,14 +4,12 @@ services:
     runtime: python3
     # Ensure Rust/Cargo uses writable /tmp during Render build and prefer binary wheels
     buildCommand: |
+      # create writable dirs first
+      mkdir -p /tmp/build_home /tmp/.cargo /tmp/.cargo-target /tmp/.rustup
       export HOME=/tmp/build_home
-      export CARGO_HOME=/tmp/.cargo
-      export CARGO_TARGET_DIR=/tmp/.cargo-target
-      export RUSTUP_HOME=/tmp/.rustup
-      mkdir -p "$HOME" "$CARGO_HOME" "$CARGO_TARGET_DIR" "$RUSTUP_HOME"
-      pip install --upgrade pip setuptools wheel
-      # Prefer binary wheels to avoid building Rust extensions where possible
-      pip install --prefer-binary -r requirements.txt
+      # run pip with env vars set inline so subprocesses used by pep517/maturin inherit them
+      CARGO_HOME=/tmp/.cargo CARGO_TARGET_DIR=/tmp/.cargo-target RUSTUP_HOME=/tmp/.rustup HOME=/tmp/build_home pip install --upgrade pip setuptools wheel
+      CARGO_HOME=/tmp/.cargo CARGO_TARGET_DIR=/tmp/.cargo-target RUSTUP_HOME=/tmp/.rustup HOME=/tmp/build_home pip install --prefer-binary -r requirements.txt
       chmod +x start.sh
     startCommand: "bash start.sh"
     plan: free
