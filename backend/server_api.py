@@ -383,8 +383,7 @@ app.add_middleware(
         "https://localhost:3000",
 +       "https://geniusjr001.github.io",
 +       "https://e261-voice-backend.onrender.com"
-    ],
-    allow_origins=["*"],  # Temporarily allow all origins
+    ], # Temporarily allow this origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
