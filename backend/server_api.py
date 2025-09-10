@@ -662,21 +662,24 @@ def tts(payload: dict):
             raise HTTPException(status_code=400, detail="missing text")
         
         print(f"[TTS] Processing text: {text[:50]}...")  # Debug logging
-        
-    # Call cached TTS function
-    audio_bytes, media_type = cached_tts(text)
 
-    print(f"[TTS] Successfully generated audio: {len(audio_bytes)} bytes, media_type={media_type}")  # Debug logging
+        # Call cached TTS function
+        audio_bytes, media_type = cached_tts(text)
 
-    return StreamingResponse(iter([audio_bytes]), media_type=media_type or "application/octet-stream")
-        
+        print(f"[TTS] Successfully generated audio: {len(audio_bytes)} bytes, media_type={media_type}")  # Debug logging
+
+        return StreamingResponse(iter([audio_bytes]), media_type=media_type or "application/octet-stream")
+
     except HTTPException as he:
-        print(f"[TTS] HTTPException: {he.detail}")  # Debug logging
-        # Re-raise HTTPExceptions from cached_tts
+        # Log and re-raise HTTPExceptions so FastAPI returns them to client unchanged
+        try:
+            detail = he.detail
+        except Exception:
+            detail = str(he)
+        print(f"[TTS] HTTPException: {detail}")
         raise
     except Exception as e:
         print(f"[TTS] Unexpected error: {str(e)}")  # Debug logging
-        # Catch any other unexpected errors
         import traceback
         error_detail = {
             "error": f"TTS endpoint error: {str(e)}",
