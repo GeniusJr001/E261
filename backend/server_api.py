@@ -367,9 +367,10 @@ origins = [
 # Remove duplicates and None values
 origins = list(set(filter(None, origins)))
 
+# Apply CORS middleware once. Keep this intentionally permissive during debugging; tighten for production.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # Temporarily allow all origins
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
