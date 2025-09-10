@@ -1,24 +1,36 @@
+from __future__ import annotations
+
+import os
+import re
+import io
+import sys
+import json
+import math
+import uuid
+import wave
+import hashlib
+import traceback
+import tempfile
+import datetime
+import subprocess
+import mimetypes
+import shutil
+import platform
+from functools import lru_cache
+from typing import Dict, Optional, List, Any, Tuple
+
+import requests
+import fastapi
+import pydantic
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, Form
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Optional, List
-import os, tempfile, requests, shutil, uuid
-import sys, os, traceback
-import mimetypes
-import subprocess
-import re
-import datetime
-import hashlib
-import platform
-import fastapi
-import pydantic
-from functools import lru_cache
-try:
-    from dateutil import parser as dateutil_parser
-except Exception:
-    dateutil_parser = None
+from dotenv import load_dotenv
+
+# Load environment once
+load_dotenv()
 
 def parse_date_from_text(text: str) -> Optional[str]:
     """
@@ -126,13 +138,7 @@ def parse_date_from_text(text: str) -> Optional[str]:
     # remove ordinal suffixes like "23rd" -> "23"
     t_nosuf = re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', t, flags=re.I)
 
-    # Try dateutil first if present (best chance to handle wordy forms)
-    if dateutil_parser:
-        try:
-            dt = dateutil_parser.parse(t_nosuf, fuzzy=True, dayfirst=False)
-            return dt.date().isoformat()
-        except Exception:
-            pass
+    # Try dateutil first if
 
     # month map
     month_names = {
@@ -328,23 +334,23 @@ def sanitize_passenger_name(name: str) -> str:
 
 # new import of shared helpers
 from .helpers import CLAIM_FIELDS, quick_pattern_extract
+from .compensation import estimate_claim_by_iata
+
+# Load environment variables early so globals below pick them up
+from dotenv import load_dotenv
+load_dotenv()
 
 # env
-ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
-#ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "large")  # adapt if needed
-ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "scribe_v1")  # default to supported ElevenLabs STT model
-# back-compat for old/legacy values
+ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "")
+ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "scribe_v1")
 if ELEVEN_STT_MODEL and ELEVEN_STT_MODEL.lower() in ("large", "large-v1", "large_v1"):
     ELEVEN_STT_MODEL = "scribe_v1"
-ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
-
+ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "")
 ZOHO_ENABLED = bool(os.getenv("ZOHO_CLIENT_ID") and os.getenv("ZOHO_CLIENT_SECRET") and os.getenv("ZOHO_REFRESH_TOKEN"))
 
 app = FastAPI(title="E261 voice backend API")
 
 # Enable CORS for frontend during development
-from dotenv import load_dotenv
-
 # Load environment variables
 load_dotenv()
 
@@ -360,6 +366,8 @@ origins = [
     "https://geniusjr001.github.io/E261",
     "https://github.com",
     "https://*.github.io",
+    "https://e261-voice-backend.onrender.com",
+    "https://localhost:3000",
     "*",  # Temporarily allow all origins for debugging
     FRONTEND_URL,  # Environment-specific URL
 ]
@@ -370,7 +378,7 @@ origins = list(set(filter(None, origins)))
 # Apply CORS middleware once. Keep this intentionally permissive during debugging; tighten for production.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins, # Temporarily allow this origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -521,6 +529,7 @@ def stt(file: UploadFile = File(...)):
         except Exception:
             pass
 
+
 # Simple in-memory cache for TTS audio
 TTS_CACHE = {}
 
@@ -625,35 +634,88 @@ def cached_tts(text: str) -> tuple[bytes, str]:
         print(f"[cached_tts] Returning dummy audio due to exception")
         return dummy_audio, "audio/mpeg"
 
-@app.post("/tts-test")
-def tts_test(payload: dict):
+# simple in-memory TTS cache
+TTS_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def _generate_silent_wav(duration_sec: float = 0.6, sample_rate: int = 16000, channels: int = 1, sampwidth: int = 2) -> bytes:
+    """Return bytes for a short silent WAV file."""
+    n_frames = int(duration_sec * sample_rate)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sampwidth)
+        wf.setframerate(sample_rate)
+        silence_frame = (0).to_bytes(sampwidth, byteorder="little", signed=True)
+        wf.writeframes(silence_frame * n_frames * channels)
+    return buf.getvalue()
+
+def cached_tts(text: str) -> Tuple[bytes, str]:
     """
-    Test TTS endpoint that returns dummy audio to test the infrastructure
+    Return (audio_bytes, media_type). Accept WAV or MP3 from ElevenLabs and pass through.
+    Fall back to local TTS or a short silent WAV.
     """
-    print(f"[TTS-TEST] Called with payload: {payload}")
+    key = hashlib.md5(text.encode("utf-8")).hexdigest()
+    if key in TTS_CACHE:
+        c = TTS_CACHE[key]
+        return c["bytes"], c["media_type"]
+
+    # Try ElevenLabs if configured (accept WAV or MP3)
+    if ELEVEN_API_KEY and ELEVEN_VOICE_ID:
+        try:
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
+            headers = {
+                "xi-api-key": ELEVEN_API_KEY,
+                "Accept": "audio/wav, audio/mpeg;q=0.9",
+                "Content-Type": "application/json",
+            }
+            body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
+            resp = requests.post(url, headers=headers, json=body, timeout=30)
+            if resp.status_code == 200 and resp.content:
+                audio_bytes = resp.content
+                ct = (resp.headers.get("content-type") or "").lower()
+                # WAV detection
+                if audio_bytes[:4] == b"RIFF" or "wav" in ct:
+                    media_type = "audio/wav"
+                # MP3 detection: ID3 tag or MPEG frame header 0xFFEx/0xFFF...
+                elif audio_bytes[:3] == b"ID3" or (len(audio_bytes) > 1 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0) or "mpeg" in ct or "mp3" in ct:
+                    media_type = "audio/mpeg"
+                else:
+                    media_type = None
+
+                if media_type:
+                    TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
+                    return audio_bytes, media_type
+        except Exception:
+            traceback.print_exc()
+
+    # Local pyttsx3 fallback if available (optional)
     try:
-        text = payload.get("text", "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="missing text")
-        
-        # Return dummy MP3 header bytes to test the response format
-        dummy_mp3_bytes = b'\xff\xfb\x90\x00' + b'\x00' * 100  # Minimal MP3 header + padding
-        
-        print(f"[TTS-TEST] Returning dummy audio: {len(dummy_mp3_bytes)} bytes")
-        return StreamingResponse(iter([dummy_mp3_bytes]), media_type="audio/mpeg")
-        
-    except Exception as e:
-        print(f"[TTS-TEST] Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        from .server_api import _tts_with_pyttsx3  # keep backwards compatibility if defined elsewhere
+    except Exception:
+        _tts_with_pyttsx3 = None
+
+    if _tts_with_pyttsx3:
+        try:
+            local = _tts_with_pyttsx3(text)
+            if local:
+                TTS_CACHE[key] = {"bytes": local, "media_type": "audio/wav"}
+                return local, "audio/wav"
+        except Exception:
+            pass
+
+    # Final safe fallback: short silent WAV
+    audio = _generate_silent_wav()
+    TTS_CACHE[key] = {"bytes": audio, "media_type": "audio/wav"}
+    return audio, "audio/wav"
+
+from fastapi import Body
+from starlette.responses import StreamingResponse
 
 @app.post("/tts")
-def tts(payload: dict):
+def tts(payload: Dict[str, Any] = Body(...)):
     """
-    Text-to-speech endpoint.
-    Expects JSON: {"text": "your text here"}
-    Returns: audio/mpeg stream
+    TTS endpoint. Expects JSON {"text": "..."}.
+    Returns audio stream with proper media type (audio/wav or audio/mpeg).
     """
     print(f"[TTS] Endpoint called with payload: {payload}")  # Debug logging
     try:
@@ -687,6 +749,14 @@ def tts(payload: dict):
             "traceback": traceback.format_exc()
         }
         raise HTTPException(status_code=500, detail=error_detail)
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    audio_bytes, media_type = cached_tts(text)
+    headers = {"Content-Length": str(len(audio_bytes))}
+    return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type, headers=headers)
 
 @app.post("/submit-claim")
 def submit_claim(payload: ClaimPayload):
@@ -1379,5 +1449,84 @@ async def submit_final_claim(request: Request):
         
     except Exception as e:
         print(f"Error submitting final claim: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add compensation estimate endpoint used by claim_review.html
+@app.post("/estimate-compensation")
+def estimate_compensation(payload: Dict[str, Any] = Body(...)):
+    """
+    Expects JSON: { "origin_iata": "LHR", "dest_iata": "CDG", "delay_hours": 4.5 }
+    Returns: JSON with distance, delay_hours and compensation dict from estimate_claim_by_iata
+    """
+    try:
+        origin = (payload.get("origin_iata") or "").strip().upper()
+        dest = (payload.get("dest_iata") or "").strip().upper()
+        delay_hours = float(payload.get("delay_hours", 0) or 0)
+
+        if not origin or not dest:
+            raise HTTPException(status_code=400, detail="origin_iata and dest_iata are required")
+
+        result = estimate_claim_by_iata(origin, dest, delay_hours)
+        return JSONResponse(content=result)
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[estimate-compensation] Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# Reserve key and default first prompt text (used by frontend as the initial audio)
+_FIRST_PROMPT_KEY = "__first_prompt__"
+FIRST_PROMPT_TEXT = (
+    "Hi, welcome to 261 Claims. I understand how frustrating flight delays can be, "
+    "and I’m here to help you resolve it. Let’s get started."
+)
+
+def _generate_and_cache_first_prompt() -> Tuple[bytes, str]:
+    """
+    Generate the 'first prompt' audio and store it in the TTS_CACHE under a reserved key.
+    Returns (audio_bytes, media_type).
+    """
+    audio_bytes, media_type = cached_tts(FIRST_PROMPT_TEXT)
+    TTS_CACHE[_FIRST_PROMPT_KEY] = {"bytes": audio_bytes, "media_type": media_type}
+    return audio_bytes, media_type
+
+@app.on_event("startup")
+def _startup_prepare_first_prompt() -> None:
+    """
+    Ensure the first prompt is generated at server startup so the frontend can fetch it immediately.
+    """
+    try:
+        _generate_and_cache_first_prompt()
+    except Exception:
+        traceback.print_exc()
+
+@app.get("/first-prompt")
+def first_prompt():
+    """
+    Return pre-generated initial audio (first prompt). If missing, generate on demand.
+    """
+    entry = TTS_CACHE.get(_FIRST_PROMPT_KEY)
+    if entry:
+        audio = entry["bytes"]
+        media_type = entry.get("media_type", "audio/wav")
+    else:
+        audio, media_type = _generate_and_cache_first_prompt()
+    return StreamingResponse(io.BytesIO(audio), media_type=media_type, headers={"Content-Length": str(len(audio))})
+
+@app.post("/trigger-first")
+def trigger_first():
+    """
+    Regenerate the first prompt immediately (useful after changing voice ID / env).
+    """
+    try:
+        _generate_and_cache_first_prompt()
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

@@ -445,6 +445,40 @@
                     <div id="document-list" class="document-list"></div>
                 </div>
 
+                <!-- Add Compensation Estimate Section -->
+                <div class="form-group compensation-section" style="margin-top: 2rem; padding: 1.5rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; color: white;">
+                    <h3 style="margin: 0 0 1rem 0; font-size: 1.25rem; font-weight: 600;">
+                        <i class="fas fa-calculator" style="margin-right: 0.5rem;"></i>
+                        Compensation Estimate
+                    </h3>
+                    <div id="compensation-content">
+                        <div id="compensation-loading" style="display: none; text-align: center; padding: 1rem;">
+                            <i class="fas fa-spinner fa-spin" style="margin-right: 0.5rem;"></i>
+                            Calculating compensation...
+                        </div>
+                        <div id="compensation-result" style="display: none;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                                <div>
+                                    <strong>Flight Distance:</strong>
+                                    <div id="flight-distance" style="font-size: 1.1rem; margin-top: 0.25rem;">-</div>
+                                </div>
+                                <div>
+                                    <strong>Delay Duration:</strong>
+                                    <div id="delay-duration" style="font-size: 1.1rem; margin-top: 0.25rem;">-</div>
+                                </div>
+                            </div>
+                            <div style="text-align: center; padding: 1rem; background: rgba(255,255,255,0.1); border-radius: 8px;">
+                                <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;">Estimated Compensation</div>
+                                <div id="compensation-amount" style="font-size: 2rem; font-weight: bold;">€0</div>
+                                <div id="compensation-status" style="font-size: 0.9rem; margin-top: 0.5rem; opacity: 0.9;">Not eligible</div>
+                            </div>
+                        </div>
+                        <div id="compensation-placeholder" style="text-align: center; padding: 1rem; opacity: 0.8;">
+                            Select departure and arrival airports to calculate compensation
+                        </div>
+                    </div>
+                </div>
+
                 <div class="action-buttons">
                     <button type="button" class="btn-secondary" onclick="goBack()">
                         ← Back to Voice Chat
@@ -722,6 +756,116 @@
                 successDiv.style.display = 'none';
             }, 5000);
         }
+
+        // Add compensation calculation functionality
+        let compensationTimeout = null;
+
+        function calculateCompensation() {
+            clearTimeout(compensationTimeout);
+            
+            // Get form values
+            const departureAirport = document.getElementById('departure-airport')?.value?.trim();
+            const arrivalAirport = document.getElementById('arrival-airport')?.value?.trim();
+            const delayHours = parseFloat(document.getElementById('delay-hours')?.value) || 0;
+            
+            // Show/hide sections
+            const placeholder = document.getElementById('compensation-placeholder');
+            const loading = document.getElementById('compensation-loading');
+            const result = document.getElementById('compensation-result');
+            
+            if (!departureAirport || !arrivalAirport) {
+                placeholder.style.display = 'block';
+                loading.style.display = 'none';
+                result.style.display = 'none';
+                return;
+            }
+            
+            // Extract IATA codes (assuming format like "LHR - London Heathrow" or just "LHR")
+            const originIata = extractIataCode(departureAirport);
+            const destIata = extractIataCode(arrivalAirport);
+            
+            if (!originIata || !destIata) {
+                placeholder.innerHTML = 'Invalid airport codes - please select valid airports';
+                placeholder.style.display = 'block';
+                loading.style.display = 'none';
+                result.style.display = 'none';
+                return;
+            }
+            
+            // Show loading
+            placeholder.style.display = 'none';
+            loading.style.display = 'block';
+            result.style.display = 'none';
+            
+            // Debounce API call
+            compensationTimeout = setTimeout(() => {
+                fetch('/estimate-compensation', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        origin_iata: originIata,
+                        dest_iata: destIata,
+                        delay_hours: delayHours
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.compensation) {
+                        // Update UI with results
+                        document.getElementById('flight-distance').textContent = `${data.distance_km} km`;
+                        document.getElementById('delay-duration').textContent = `${data.delay_hours} hours`;
+                        document.getElementById('compensation-amount').textContent = `€${data.compensation.amount_eur}`;
+                        document.getElementById('compensation-status').textContent = 
+                            data.compensation.eligible ? `Eligible (${data.compensation.band})` : 'Not eligible (delay < 3 hours)';
+                        
+                        // Show result
+                        loading.style.display = 'none';
+                        result.style.display = 'block';
+                    } else {
+                        throw new Error('Invalid response format');
+                    }
+                })
+                .catch(error => {
+                    console.error('Compensation calculation error:', error);
+                    placeholder.innerHTML = 'Unable to calculate compensation - please try again';
+                    placeholder.style.display = 'block';
+                    loading.style.display = 'none';
+                    result.style.display = 'none';
+                });
+            }, 500); // 500ms debounce
+        }
+
+        function extractIataCode(airportString) {
+            if (!airportString) return null;
+            
+            // Try to extract 3-letter IATA code
+            const match = airportString.match(/\b([A-Z]{3})\b/);
+            return match ? match[1] : null;
+        }
+
+        // Add event listeners to airport and delay fields
+        document.addEventListener('DOMContentLoaded', function() {
+            const departureField = document.getElementById('departure-airport');
+            const arrivalField = document.getElementById('arrival-airport');
+            const delayField = document.getElementById('delay-hours');
+            
+            if (departureField) {
+                departureField.addEventListener('change', calculateCompensation);
+                departureField.addEventListener('input', calculateCompensation);
+            }
+            
+            if (arrivalField) {
+                arrivalField.addEventListener('change', calculateCompensation);
+                arrivalField.addEventListener('input', calculateCompensation);
+            }
+            
+            if (delayField) {
+                delayField.addEventListener('change', calculateCompensation);
+                delayField.addEventListener('input', calculateCompensation);
+            }
+        });
 
         console.log('[CLAIM-REVIEW] Initialized with session ID:', sessionId);
         console.log('[CLAIM-REVIEW] Using backend URL:', BACKEND_URL);

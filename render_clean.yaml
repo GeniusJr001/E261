@@ -2,29 +2,30 @@ services:
   - type: web
     name: e261-voice-backend
     runtime: python3
-    buildCommand: "pip install -r requirements.txt && chmod +x start.sh"
+    # Ensure Rust/Cargo uses writable /tmp during Render build and prefer binary wheels
+    buildCommand: |
+      # create writable dirs first
+      mkdir -p /tmp/build_home /tmp/.cargo /tmp/.cargo-target /tmp/.rustup
+      export HOME=/tmp/build_home
+      # run pip with env vars set inline so subprocesses used by pep517/maturin inherit them
+      CARGO_HOME=/tmp/.cargo CARGO_TARGET_DIR=/tmp/.cargo-target RUSTUP_HOME=/tmp/.rustup HOME=/tmp/build_home pip install --upgrade pip setuptools wheel
+      CARGO_HOME=/tmp/.cargo CARGO_TARGET_DIR=/tmp/.cargo-target RUSTUP_HOME=/tmp/.rustup HOME=/tmp/build_home pip install --prefer-binary -r requirements.txt
+      chmod +x start.sh
     startCommand: "bash start.sh"
     plan: free
     env: python
     region: oregon
-    envVars:
+    env_vars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      # Do NOT put real secrets here. Set them in Render Dashboard (Environment → Secrets).
       - key: ELEVEN_API_KEY
-        value: "sk_1305ed53b0a8cfeb6a9aeb7ec9c6bfa15b2768dd6b82ace3"
-      - key: ELEVEN_STT_MODEL
-        value: "scribe_v1"
+        value: ""
       - key: ELEVEN_VOICE_ID
-        value: "rSZFtT0J8GtnLqoDoFAp"
+        value: ""
       - key: ZOHO_CLIENT_ID
-        value: "1000.9MD5ZAJR00ERUDJLO25LW4AFDVL2VR"
+        value: ""
       - key: ZOHO_CLIENT_SECRET
-        value: "9949868b2662e037deff4f6d44036068a9091d3179"
+        value: ""
       - key: ZOHO_REFRESH_TOKEN
-        value: "1000.249d2670d6a0d7eda8b096f749ea99b9.5d0c7504d902a537e8dcdf400ee1996a"
-      - key: OPENAI_API_KEY
-        value: "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"
-      - key: FRONTEND_URL
-        value: "https://e261-voice-backend.onrender.com"
-      - key: BACKEND_URL
-        value: "https://e261-voice-backend.onrender.com"
+        value: ""

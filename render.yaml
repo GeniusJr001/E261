@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: e261-backend
+    env: docker
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn backend.server_api:app --host 0.0.0.0 --port $PORT"
+    env_vars:
+      # Do NOT put real secrets here. Set them in Render Dashboard (Environment → Secrets).
+      ELEVEN_API_KEY: ""
+      ELEVEN_VOICE_ID: ""
+      ZOHO_CLIENT_ID: ""
+      ZOHO_CLIENT_SECRET: ""
+      ZOHO_REFRESH_TOKEN: ""
