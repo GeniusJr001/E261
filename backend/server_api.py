@@ -556,15 +556,12 @@ def cached_tts(text: str) -> tuple[bytes, str]:
         # Check cache first
         if text_hash in TTS_CACHE:
             cached = TTS_CACHE[text_hash]
-            # cached may be either bytes (old style) or tuple (bytes, media_type)
             if isinstance(cached, tuple) and len(cached) == 2:
                 print(f"[cached_tts] Cache hit (tuple)! Returning cached audio")
                 return cached
-            else:
-                # detect media type for legacy cache entries
-                media = _detect_media_type_from_bytes(cached)
-                print(f"[cached_tts] Cache hit (legacy bytes). Detected media: {media}")
-                return cached, media
+            media = _detect_media_type_from_bytes(cached)
+            print(f"[cached_tts] Cache hit (legacy bytes). Detected media: {media}")
+            return cached, media
 
         # Check environment variables
         print(f"[cached_tts] Checking env vars - API Key: {bool(ELEVEN_API_KEY)}, Voice ID: {bool(ELEVEN_VOICE_ID)}")
@@ -592,6 +589,12 @@ def cached_tts(text: str) -> tuple[bytes, str]:
         resp = requests.post(url, headers=headers, json=body, timeout=30)
 
         print(f"[cached_tts] ElevenLabs response: {resp.status_code}")  # Debug logging
+        try:
+            print(f"[cached_tts] ElevenLabs Content-Type: {resp.headers.get('Content-Type')}")
+            preview = resp.content[:64]
+            print(f"[cached_tts] ElevenLabs resp.content preview (hex len={len(resp.content)}): {preview.hex()}")
+        except Exception as _e:
+            print(f"[cached_tts] Could not preview resp.content: {_e}")
 
         if resp.status_code != 200:
             print(f"[cached_tts] ElevenLabs error: {resp.status_code} {resp.text[:200]}")  # Debug logging
