@@ -839,10 +839,11 @@ def cached_tts(text: str) -> Tuple[bytes, str]:
     # Try ElevenLabs if configured (accept WAV or MP3)
     if ELEVEN_API_KEY and ELEVEN_VOICE_ID:
         try:
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
+            # Prefer the non-streaming TTS endpoint and request MP3 by default to avoid broken zero-filled WAV streams
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
             headers = {
                 "xi-api-key": ELEVEN_API_KEY,
-                "Accept": "audio/wav, audio/mpeg;q=0.9, */*",
+                "Accept": "audio/mpeg, audio/wav;q=0.9, */*",
                 "Content-Type": "application/json",
             }
             body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
