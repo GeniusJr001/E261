@@ -809,6 +809,23 @@ def _generate_silent_wav(duration_sec: float = 0.6, sample_rate: int = 16000, ch
     return buf.getvalue()
 
 
+def _generate_tone_wav(duration_sec: float = 0.6, sample_rate: int = 16000, freq: float = 600.0, channels: int = 1, sampwidth: int = 2) -> bytes:
+    """Return bytes for a short audible sine-wave WAV (useful as an unmistakable fallback)."""
+    n_frames = int(duration_sec * sample_rate)
+    buf = io.BytesIO()
+    max_amp = (2 ** (sampwidth * 8 - 1)) - 1
+    amp = int(max_amp * 0.25)
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sampwidth)
+        wf.setframerate(sample_rate)
+        for i in range(n_frames):
+            t = i / sample_rate
+            sample = int(amp * math.sin(2 * math.pi * freq * t))
+            wf.writeframes(sample.to_bytes(sampwidth, byteorder="little", signed=True) * channels)
+    return buf.getvalue()
+
+
 def cached_tts(text: str) -> Tuple[bytes, str]:
     """
     Return (audio_bytes, media_type). Accept WAV or MP3 from ElevenLabs and pass through.
@@ -833,22 +850,34 @@ def cached_tts(text: str) -> Tuple[bytes, str]:
             resp = requests.post(url, headers=headers, json=body, timeout=30)
             print(f"[cached_tts] ElevenLabs status={resp.status_code} content-type={resp.headers.get('Content-Type')}")
             try:
-                preview = resp.content[:64]
+                preview = resp.content[:256]
                 print(f"[cached_tts] preview hex len={len(resp.content)}: {preview.hex()}")
             except Exception:
                 pass
+
             if resp.status_code == 200 and resp.content:
                 audio_bytes = resp.content
                 ct = (resp.headers.get("content-type") or "").lower()
                 # WAV detection
                 if audio_bytes[:4] == b"RIFF" or "wav" in ct:
+                    # If payload is WAV, ensure it's not all-zero PCM (common broken response)
                     media_type = "audio/wav"
+                    if len(audio_bytes) > 44:
+                        payload = audio_bytes[44:]
+                        try:
+                            if all(b == 0 for b in payload):
+                                print("[cached_tts] Detected all-zero WAV payload from ElevenLabs (silent). Ignoring and falling back.")
+                                # intentionally don't cache; fall through to fallback generators
+                                audio_bytes = None
+                                media_type = None
+                        except Exception:
+                            pass
                 elif audio_bytes[:3] == b"ID3" or (len(audio_bytes) > 1 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0) or "mpeg" in ct or "mp3" in ct:
                     media_type = "audio/mpeg"
                 else:
                     media_type = _detect_media_type_from_bytes(audio_bytes)
 
-                if media_type:
+                if audio_bytes and media_type:
                     TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
                     return audio_bytes, media_type
         except Exception:
@@ -869,9 +898,10 @@ def cached_tts(text: str) -> Tuple[bytes, str]:
         except Exception:
             pass
 
-    # Final safe fallback: short silent WAV
-    audio = _generate_silent_wav()
+    # Final audible fallback: short tone WAV so playback is noticeable while debugging
+    audio = _generate_tone_wav()
     TTS_CACHE[key] = {"bytes": audio, "media_type": "audio/wav"}
+    print("[cached_tts] Returning audible tone fallback (debug)")
     return audio, "audio/wav"
 
 from fastapi import Body
