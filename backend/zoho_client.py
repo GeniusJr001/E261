@@ -49,47 +49,53 @@ class ZohoClient:
         if not self.enabled:
             print("Zoho integration disabled")
             return None
-            
+
         if not self.access_token:
             self.get_access_token()
-            
+
         if not self.access_token:
             return None
-            
-        # Map claim data to Zoho lead fields
-        lead_data = {
-            "data": [{
-                "First_Name": claim_data.get('passenger_name', '').split()[0] if claim_data.get('passenger_name') else '',
-                "Last_Name": ' '.join(claim_data.get('passenger_name', '').split()[1:]) if claim_data.get('passenger_name') else '',
-                "Email": claim_data.get('contact_email', ''),
-                "Phone": claim_data.get('phone', ''),
-                "Company": claim_data.get('airline', 'Flight Delay Claim'),
-                "Lead_Source": "Voice AI Website",
-                "Description": self._format_claim_description(claim_data),
-                "Lead_Status": "New",
-                # Custom fields for flight information
-                "Flight_Number": claim_data.get('flight_number', ''),
-                "Flight_Date": claim_data.get('flight_date', ''),
-                "Delay_Hours": claim_data.get('delay_hours', 0),
-                "Departure_Airport": claim_data.get('departure_airport', ''),
-                "Arrival_Airport": claim_data.get('arrival_airport', ''),
-                "Claim_Status": claim_data.get('claim_status', 'New Claim'),
-                "Airline_Response": claim_data.get('airline_response', ''),
-            }]
+
+        # Map our canonical claim fields to Zoho API fields (adjust keys as your Zoho schema expects)
+        passenger = claim_data.get('Passenger_Name') or claim_data.get('passenger_name') or ""
+        first_name = passenger.split()[0] if passenger else ""
+        last_name = " ".join(passenger.split()[1:]) if passenger and len(passenger.split()) > 1 else first_name
+
+        lead_record = {
+            "First_Name": first_name,
+            "Last_Name": last_name,
+            "Email": claim_data.get('Contact_Email') or claim_data.get('contact_email') or "",
+            "Company": claim_data.get('Airline') or claim_data.get('airline') or "Flight Delay Claim",
+            "Lead_Source": "Voice AI Website",
+            "Description": self._format_claim_description(claim_data),
+            "Lead_Status": claim_data.get('Claim_Status') or claim_data.get('claim_status') or "New",
+            # Custom or mapped fields - ensure these field API names match your Zoho setup
+            "Flight_Number": claim_data.get('Flight_Number') or claim_data.get('flight_number') or "",
+            "Flight_Date": claim_data.get('Flight_Date') or claim_data.get('flight_date') or "",
+            "Departure_Airport": claim_data.get('Departure_Airport') or claim_data.get('departure_airport') or "",
+            "Departure_Time": claim_data.get('Departure_time') or claim_data.get('departure_time') or "",
+            "Arrival_Airport": claim_data.get('Arrival_Airport') or claim_data.get('arrival_airport') or "",
+            "Arrival_Time": claim_data.get('Arrival_time') or claim_data.get('arrival_time') or "",
+            "Delay_Hours": claim_data.get('Delay_Hours') or claim_data.get('delay_hours') or 0,
+            "Compensation_Amount": claim_data.get('Compensation_Amount') or claim_data.get('compensation_amount') or "",
+            "Airline_Response": claim_data.get('Airline_Response') or claim_data.get('airline_response') or "",
+            "Booking_Reference": claim_data.get('Booking_Reference') or claim_data.get('booking_reference') or ""
         }
-        
+
+        lead_data = {"data": [lead_record]}
+
         headers = {
             'Authorization': f'Zoho-oauthtoken {self.access_token}',
             'Content-Type': 'application/json'
         }
-        
+
         try:
             response = requests.post(
                 f'{self.base_url}/Leads',
                 headers=headers,
                 data=json.dumps(lead_data)
             )
-            
+
             if response.status_code == 201:
                 result = response.json()
                 if result.get('data') and len(result['data']) > 0:
@@ -99,7 +105,7 @@ class ZohoClient:
             else:
                 print(f"Failed to create lead: {response.status_code} - {response.text}")
                 return None
-                
+
         except Exception as e:
             print(f"Error creating lead: {e}")
             return None
