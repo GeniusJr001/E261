@@ -866,8 +866,34 @@ def cached_tts(text: str) -> Tuple[bytes, str]:
                         payload = audio_bytes[44:]
                         try:
                             if all(b == 0 for b in payload):
-                                print("[cached_tts] Detected all-zero WAV payload from ElevenLabs (silent). Ignoring and falling back.")
-                                # intentionally don't cache; fall through to fallback generators
+                                print("[cached_tts] Detected all-zero WAV payload from ElevenLabs (silent). Attempting MP3 retry...")
+                                # Try retrying the request asking for MP3 to work around streaming WAV issues
+                                try:
+                                    headers_mp3 = headers.copy()
+                                    headers_mp3["Accept"] = "audio/mpeg, audio/*;q=0.9"
+                                    resp2 = requests.post(url, headers=headers_mp3, json=body, timeout=30)
+                                    print(f"[cached_tts] Retry status={getattr(resp2, 'status_code', 'NA')} content-type={resp2.headers.get('Content-Type') if resp2 is not None else 'NA'}")
+                                    if resp2 is not None and resp2.status_code == 200 and resp2.content:
+                                        audio_bytes2 = resp2.content
+                                        ct2 = (resp2.headers.get('Content-Type') or '').lower()
+                                        # If mp3-ish content, accept it
+                                        if audio_bytes2[:3] == b'ID3' or (len(audio_bytes2) > 1 and audio_bytes2[0] == 0xFF and (audio_bytes2[1] & 0xE0) == 0xE0) or 'mpeg' in ct2 or 'mp3' in ct2:
+                                            media_type = 'audio/mpeg'
+                                            audio_bytes = audio_bytes2
+                                            TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
+                                            return audio_bytes, media_type
+                                except Exception as _e:
+                                    print(f"[cached_tts] MP3 retry failed: {_e}")
+                                # If retry didn't work, save debug file for inspection
+                                try:
+                                    tf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                                    tf.write(audio_bytes)
+                                    tf.flush()
+                                    tf.close()
+                                    print(f"[cached_tts] Saved suspicious WAV to: {tf.name}")
+                                except Exception:
+                                    pass
+                                # intentionally don't cache the all-zero WAV; fall through to fallback generators
                                 audio_bytes = None
                                 media_type = None
                         except Exception:
