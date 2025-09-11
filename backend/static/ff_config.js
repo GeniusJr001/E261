@@ -1,0 +1,3 @@
+// ...new file...
+// Frontend configuration injected at runtime
+window.API_BASE_URL = "https://e261-voice-backend.onrender.com";

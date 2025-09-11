@@ -371,6 +371,10 @@
                             <input type="text" id="flight-number" name="Flight Number" required>
                         </div>
                         <div class="form-group">
+                            <label for="booking-reference">Booking Reference *</label>
+                            <input type="text" id="booking-reference" name="Booking Reference" required>
+                        </div>
+                        <div class="form-group">
                             <label for="flight-date">Flight Date *</label>
                             <input type="date" id="flight-date" name="Flight Date" required>
                         </div>
@@ -387,8 +391,20 @@
                             <input type="text" id="departure-airport" name="Departure Airport" required>
                         </div>
                         <div class="form-group">
+                            <label for="departure-time">Departure Time *</label>
+                            <input type="text" id="departure-time" name="Departure Time" placeholder="HH:MM" required>
+                        </div>
+                        <div class="form-group">
                             <label for="arrival-airport">Arrival Airport *</label>
                             <input type="text" id="arrival-airport" name="Arrival Airport" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="arrival-time">Arrival Time *</label>
+                            <input type="text" id="arrival-time" name="Arrival Time" placeholder="HH:MM" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="compensation-amount">Estimated Compensation</label>
+                            <input type="text" id="compensation-amount" name="Compensation Amount" readonly>
                         </div>
                     </div>
                 </div>
@@ -548,12 +564,16 @@
             const fieldMapping = {
                 'Passenger Name': 'passenger-name',
                 'Contact Email': 'contact-email',
+                'Booking_Reference': 'booking-reference',
                 'Flight Number': 'flight-number',
                 'Flight Date': 'flight-date',
                 'Airline': 'airline',
                 'Delay Hours': 'delay-hours',
                 'Departure Airport': 'departure-airport',
+                'Departure_time': 'departure-time',
                 'Arrival Airport': 'arrival-airport',
+                'Arrival_time': 'arrival-time',
+                'Compensation_Amount': 'compensation-amount',
                 'Airline Response': 'airline-response',
                 'Claim Status': 'claim-status'
             };
@@ -689,11 +709,21 @@
             const formData = new FormData(e.target);
             const claimData = {};
             
+            // Convert FormData to plain object with proper field names for Zoho
             for (const [key, value] of formData.entries()) {
-                claimData[key] = value;
+                // Map form fields to Zoho field names (ensure consistent naming)
+                const zohoFieldName = key.replace(' ', '_');
+                claimData[zohoFieldName] = value;
+                // Also keep the original key for backend compatibility
+                if (key !== zohoFieldName) {
+                    claimData[key] = value;
+                }
             }
 
-            // Show loading
+            // Add document list to payload
+            claimData.documents = uploadedDocuments;
+
+            // Show loading state
             document.getElementById('loading').style.display = 'block';
             e.target.style.display = 'none';
 
@@ -705,7 +735,8 @@
                     },
                     body: JSON.stringify({
                         session_id: sessionId,
-                        claim_data: claimData
+                        claim_data: claimData,
+                        document_count: uploadedDocuments.length
                     })
                 });
 
@@ -716,13 +747,24 @@
 
                 const result = await response.json();
                 
-                // Show success and redirect
-                showSuccess(`Claim submitted successfully! Claim ID: ${result.claim_id}`);
+                // Show success message with claim ID
+                showSuccess(`Claim submitted successfully! Reference ID: ${result.claim_id || 'N/A'}`);
                 
-                setTimeout(() => {
-                    // Redirect to a success page or back to home
-                    window.location.href = '/';
-                }, 3000);
+                // Update UI with more details
+                const successDetails = document.createElement('div');
+                successDetails.className = 'success';
+                successDetails.innerHTML = `
+                    <h3>Claim Submitted Successfully</h3>
+                    <p>Your claim has been sent to our team for processing.</p>
+                    <p>Reference ID: ${result.claim_id || 'N/A'}</p>
+                    <p>We'll contact you at the provided email address with updates on your claim.</p>
+                    <div style="margin-top: 20px;">
+                        <button class="btn-primary" onclick="window.location.href='/'">Return to Home</button>
+                    </div>
+                `;
+                
+                document.getElementById('loading').style.display = 'none';
+                document.querySelector('.content').appendChild(successDetails);
 
             } catch (error) {
                 showError('Failed to submit claim: ' + error.message);

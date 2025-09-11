@@ -261,6 +261,105 @@ def parse_date_from_text(text: str) -> Optional[str]:
 
     return None
 
+import math
+# optional airportsdata lookup
+try:
+    from airportsdata import airports as AIRPORTS
+except Exception:
+    AIRPORTS = None
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    # return distance in kilometers
+    R = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return R * c
+
+def _get_airport_coords(tok: Optional[str]):
+    """Try to resolve an airport token (IATA or name) to (lat, lon)."""
+    if not tok:
+        return None
+    tok = tok.strip()
+    # if already 3-letter IATA
+    if len(tok) == 3 and tok.isalpha():
+        code = tok.upper()
+        if AIRPORTS and code in AIRPORTS:
+            rec = AIRPORTS[code]
+            try:
+                return float(rec.get("lat")), float(rec.get("lon"))
+            except Exception:
+                return None
+        return None
+    # try to find by substring match in name/city
+    if AIRPORTS:
+        tlow = tok.lower()
+        for code, rec in AIRPORTS.items():
+            name = str(rec.get("name", "") or "").lower()
+            city = str(rec.get("city", "") or "").lower()
+            if tlow in name or tlow in city or tlow == code.lower():
+                try:
+                    return float(rec.get("lat")), float(rec.get("lon"))
+                except Exception:
+                    continue
+    return None
+
+def compute_compensation_amount(session_map: Dict[str, Optional[str]]) -> Optional[str]:
+    """
+    Compute compensation according to simple EU-like rules:
+      - <=1500 km and delay >= 3h -> €250
+      - 1500-3500 km and delay >= 3h -> €400
+      - >3500 km and delay >= 4h -> €600
+    Returns formatted string like "€250.00" or None if cannot compute.
+    """
+    try:
+        dep = session_map.get("Departure Airport") or session_map.get("Departure_Airport") or ""
+        arr = session_map.get("Arrival Airport") or session_map.get("Arrival_Airport") or ""
+        delay = session_map.get("Delay Hours") or session_map.get("Delay_Hours") or None
+
+        # log if airportsdata not available so we can debug deploys that lack the package
+        if not AIRPORTS:
+            print("[compute_compensation_amount] airportsdata not available; cannot resolve IATA/name -> coords")
+
+        if not dep or not arr or not delay:
+            return None
+        # normalize delay to float
+        try:
+            delay_v = float(str(delay))
+        except Exception:
+            # try to strip non-digits
+            m = re.search(r'(\d+(?:\.\d+)?)', str(delay))
+            if not m:
+                return None
+            delay_v = float(m.group(1))
+
+        coords_a = _get_airport_coords(dep)
+        coords_b = _get_airport_coords(arr)
+        if not coords_a or not coords_b:
+            return None
+        dist_km = _haversine_km(coords_a[0], coords_a[1], coords_b[0], coords_b[1])
+
+        # EU-like rules
+        comp = 0.0
+        if dist_km <= 1500:
+            if delay_v >= 3:
+                comp = 250.0
+        elif dist_km <= 3500:
+            if delay_v >= 3:
+                comp = 400.0
+        else:
+            if delay_v >= 4:
+                comp = 600.0
+        if comp <= 0:
+            return "€0.00"
+        return f"€{comp:.2f}"
+    except Exception as e:
+        print("[compute_compensation_amount] error:", e)
+        return None
+
 def parse_delay_hours(text: str) -> Optional[str]:
     """
     Parse delay duration from free-form text and return normalized hours as a string.
@@ -332,13 +431,55 @@ def sanitize_passenger_name(name: str) -> str:
     cleaned = " ".join(parts)
     return cleaned
 
-# new import of shared helpers
-from .helpers import CLAIM_FIELDS, quick_pattern_extract
-from .compensation import estimate_claim_by_iata
+# Import optional helpers and provide fallbacks
+try:
+    from .helpers import CLAIM_FIELDS, quick_pattern_extract
+except Exception as _e:
+    print(f"[startup] helpers import failed or missing: {_e} -- falling back to defaults")
+    try:
+        from .main_convo import CLAIM_FIELDS as CLAIM_FIELDS  # type: ignore
+    except Exception:
+        CLAIM_FIELDS = [
+            "Passenger Name",
+            "Contact Email",
+            "Booking Reference",
+            "Flight Number",
+            "Flight Date",
+            "Departure Airport",
+            "Departure time",
+            "Arrival Airport",
+            "Arrival time",
+            "Delay Hours",
+            "Compensation Amount",
+            "Claim Status",
+            "Airline",
+            "Airline Response"
+        ]
 
-# Load environment variables early so globals below pick them up
-from dotenv import load_dotenv
-load_dotenv()
+# Try to import a compensation helper if present; otherwise we'll provide a local estimator wrapper
+try:
+    from .compensation import estimate_claim_by_iata
+except Exception:
+    def estimate_claim_by_iata(origin_iata: str, dest_iata: str, delay_hours: float) -> Dict[str, Any]:
+        """Fallback estimator that uses local airportsdata/haversine logic.
+        Returns a dict: {distance_km, delay_hours, compensation}
+        """
+        coords_a = _get_airport_coords(origin_iata)
+        coords_b = _get_airport_coords(dest_iata)
+        if not coords_a or not coords_b:
+            raise ValueError("Could not resolve one or both IATA codes to coordinates")
+        dist_km = _haversine_km(coords_a[0], coords_a[1], coords_b[0], coords_b[1])
+        comp = 0.0
+        if dist_km <= 1500:
+            if delay_hours >= 3:
+                comp = 250.0
+        elif dist_km <= 3500:
+            if delay_hours >= 3:
+                comp = 400.0
+        else:
+            if delay_hours >= 4:
+                comp = 600.0
+        return {"distance_km": round(dist_km, 2), "delay_hours": delay_hours, "compensation": f"€{comp:.2f}"}
 
 # env
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "")
@@ -378,7 +519,7 @@ origins = list(set(filter(None, origins)))
 # Apply CORS middleware once. Keep this intentionally permissive during debugging; tighten for production.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # Temporarily allow this origins
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -640,6 +781,21 @@ def cached_tts(text: str) -> tuple[bytes, str]:
 # simple in-memory TTS cache
 TTS_CACHE: Dict[str, Dict[str, Any]] = {}
 
+
+def _detect_media_type_from_bytes(b: bytes) -> str:
+    # Simple magic checks: WAV (RIFF), MP3 (ID3 or frame sync)
+    try:
+        if len(b) >= 12 and b[0:4] == b"RIFF" and b[8:12] == b"WAVE":
+            return "audio/wav"
+        if len(b) >= 3 and b[0:3] == b"ID3":
+            return "audio/mpeg"
+        if len(b) >= 2 and (b[0] & 0xFF) == 0xFF and (b[1] & 0xE0) == 0xE0:
+            return "audio/mpeg"
+    except Exception:
+        pass
+    return "application/octet-stream"
+
+
 def _generate_silent_wav(duration_sec: float = 0.6, sample_rate: int = 16000, channels: int = 1, sampwidth: int = 2) -> bytes:
     """Return bytes for a short silent WAV file."""
     n_frames = int(duration_sec * sample_rate)
@@ -651,6 +807,7 @@ def _generate_silent_wav(duration_sec: float = 0.6, sample_rate: int = 16000, ch
         silence_frame = (0).to_bytes(sampwidth, byteorder="little", signed=True)
         wf.writeframes(silence_frame * n_frames * channels)
     return buf.getvalue()
+
 
 def cached_tts(text: str) -> Tuple[bytes, str]:
     """
@@ -668,22 +825,28 @@ def cached_tts(text: str) -> Tuple[bytes, str]:
             url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
             headers = {
                 "xi-api-key": ELEVEN_API_KEY,
-                "Accept": "audio/wav, audio/mpeg;q=0.9",
+                "Accept": "audio/wav, audio/mpeg;q=0.9, */*",
                 "Content-Type": "application/json",
             }
             body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
+            print(f"[cached_tts] Requesting ElevenLabs TTS for text hash={key} len={len(text)}")
             resp = requests.post(url, headers=headers, json=body, timeout=30)
+            print(f"[cached_tts] ElevenLabs status={resp.status_code} content-type={resp.headers.get('Content-Type')}")
+            try:
+                preview = resp.content[:64]
+                print(f"[cached_tts] preview hex len={len(resp.content)}: {preview.hex()}")
+            except Exception:
+                pass
             if resp.status_code == 200 and resp.content:
                 audio_bytes = resp.content
                 ct = (resp.headers.get("content-type") or "").lower()
                 # WAV detection
                 if audio_bytes[:4] == b"RIFF" or "wav" in ct:
                     media_type = "audio/wav"
-                # MP3 detection: ID3 tag or MPEG frame header 0xFFEx/0xFFF...
                 elif audio_bytes[:3] == b"ID3" or (len(audio_bytes) > 1 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0) or "mpeg" in ct or "mp3" in ct:
                     media_type = "audio/mpeg"
                 else:
-                    media_type = None
+                    media_type = _detect_media_type_from_bytes(audio_bytes)
 
                 if media_type:
                     TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
@@ -717,9 +880,42 @@ from starlette.responses import StreamingResponse
 @app.post("/tts")
 def tts(payload: Dict[str, Any] = Body(...)):
     """
-    TTS endpoint. Expects JSON {"text": "..."}.
-    Returns audio stream with proper media type (audio/wav or audio/mpeg).
+    Text-to-speech endpoint supporting either:
+      - {"text": "..."} to synthesize arbitrary text
+      - {"field": "Passenger Name"} to synthesize a configured prompt from main_convo.FIELD_PROMPTS
+    Returns audio stream with the detected media type and Content-Length header.
     """
+
+    try:
+        # prefer explicit field -> map to main_convo prompt when available
+        text: Optional[str] = None
+        if isinstance(payload, dict):
+            field_key = payload.get("field")
+            if field_key and main_convo:
+                prompts = getattr(main_convo, "FIELD_PROMPTS", None) or {}
+                text = prompts.get(field_key) or prompts.get(field_key.replace("_", " ")) or None
+                if not text and hasattr(main_convo, "get_field_prompt"):
+                    try:
+                        text = main_convo.get_field_prompt(field_key)
+                    except Exception:
+                        text = None
+
+            if not text:
+                text = (payload.get("text") or "").strip()
+
+        if not text:
+            raise HTTPException(status_code=400, detail="missing text or field")
+
+        audio_bytes, media_type = cached_tts(text)
+        headers = {"Content-Length": str(len(audio_bytes))}
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type or "application/octet-stream", headers=headers)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[TTS] Unexpected error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
     print(f"[TTS] Endpoint called with payload: {payload}")  # Debug logging
     try:
         text = payload.get("text", "").strip()
@@ -757,9 +953,34 @@ def tts(payload: Dict[str, Any] = Body(...)):
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
 
-    audio_bytes, media_type = cached_tts(text)
-    headers = {"Content-Length": str(len(audio_bytes))}
-    return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type, headers=headers)
+
+
+# convenience endpoint to synthesize an existing prompt by field name (GET)
+@app.get("/tts-prompt/{field}")
+def tts_prompt(field: str):
+    """
+    Synthesize a prompt from main_convo.FIELD_PROMPTS by field key.
+    Useful for quickly generating audio for the configured questions.
+    """
+    if not main_convo:
+        raise HTTPException(status_code=404, detail="main_convo not available on server")
+    prompts = getattr(main_convo, "FIELD_PROMPTS", {}) or {}
+    text = prompts.get(field) or prompts.get(field.replace("_", " ")) or None
+    if not text and hasattr(main_convo, "get_field_prompt"):
+        try:
+            text = main_convo.get_field_prompt(field)
+        except Exception:
+            text = None
+    if not text:
+        raise HTTPException(status_code=404, detail=f"Prompt for '{field}' not found")
+    try:
+        audio_bytes, media_type = cached_tts(text)
+        headers = {"Content-Length": str(len(audio_bytes))}
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type or "application/octet-stream", headers=headers)
+    except Exception as e:
+        print(f"[tts-prompt] error synthesizing '{field}': {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/submit-claim")
 def submit_claim(payload: ClaimPayload):
@@ -770,31 +991,52 @@ def submit_claim(payload: ClaimPayload):
     if not ZOHO_ENABLED:
         raise HTTPException(status_code=500, detail="Zoho env vars not set")
 
-    # lazy import so server still starts without Zoho env set
-    from .zoho_client import ZohoCRM
+    # use central client used elsewhere
+    try:
+        from .zoho_client import zoho_client
+    except Exception as e:
+        print("submit_claim: failed to import zoho_client:", e)
+        raise HTTPException(status_code=500, detail="zoho client not available")
 
-    zoho = ZohoCRM()
-    data = payload.data
-
-    # map to Zoho contact fields if available
+    data = payload.data or {}
+    # Build contact payload if email/name present
     contact_payload = {}
-    if email := data.get("Contact Email"):
+    email = data.get("Contact Email") or data.get("Contact_Email")
+    if email:
         contact_payload["Email"] = email
-        # first/last heuristics
-        name = data.get("Passenger Name", "").strip()
+        name = data.get("Passenger Name") or data.get("Passenger_Name") or ""
         if name:
             parts = name.split()
             contact_payload["First_Name"] = parts[0]
             contact_payload["Last_Name"] = parts[-1] if len(parts) > 1 else parts[0]
 
     try:
-        contact_id = zoho.create_or_update_contact(contact_payload) if contact_payload else None
-        # prepare claim data - keys must match Zoho field API names; assume frontend uses API names
-        claim_api_payload = {k: v for k, v in data.items() if v is not None}
+        # If your zoho_client has create_or_update_contact, use it; otherwise create_lead will include contact info.
+        contact_id = None
+        if contact_payload and hasattr(zoho_client, "create_or_update_contact"):
+            contact_id = zoho_client.create_or_update_contact(contact_payload)
+
+        # build lead/claim payload - normalize keys to underscore form
+        claim_api_payload = {}
+        for k, v in data.items():
+            if v is None:
+                continue
+            key = k.replace(" ", "_")
+            claim_api_payload[key] = v
+
         if contact_id:
             claim_api_payload["Contact_Name"] = contact_id
-        claim_id = zoho.create_claim(claim_api_payload, module_name=data.get("module_name", "Claims"))
+
+        # create lead/claim — prefer unified create_lead if available
+        if hasattr(zoho_client, "create_lead"):
+            claim_id = zoho_client.create_lead(claim_api_payload)
+        elif hasattr(zoho_client, "create_claim"):
+            claim_id = zoho_client.create_claim(claim_api_payload)
+        else:
+            raise RuntimeError("zoho_client has no create_lead/create_claim method")
+
     except Exception as e:
+        print("submit_claim: zoho error:", e)
         raise HTTPException(status_code=502, detail=str(e))
 
     return {"contact_id": contact_id, "claim_id": claim_id}
@@ -1239,6 +1481,23 @@ async def conversation_respond(session_id: str, request: Request, file: UploadFi
                         else:
                             next_prompt = f"Could you please provide your {next_field.lower()}?"
 
+        # Auto-fill Compensation Amount if it's the next missing field (do not ask user)
+        try:
+            # prefer space key, but support underscore forms
+            comp_key_space = "Compensation Amount"
+            comp_key_uscore = "Compensation_Amount"
+            current_next = next((k for k, v in collected.items() if v is None), None)
+            if current_next in (comp_key_space, comp_key_uscore):
+                comp_val = compute_compensation_amount(collected)
+                if comp_val is not None:
+                    collected[comp_key_space] = comp_val
+                    collected[comp_key_uscore] = comp_val
+                    newly_filled = True
+                    # advance to next missing
+                    next_field = next((k for k, v in collected.items() if v is None), None)
+        except Exception as _e:
+            print("[conversation_respond] compensation auto-fill error:", _e)
+
         # Set timeout if not already set
         if 'silence_timeout' not in locals():
             if main_convo:
@@ -1271,9 +1530,23 @@ def get_claim_review(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     
     collected = _sessions[session_id]
-    # Remove internal tracking fields
+    # compute compensation if missing
+    comp_key_space = "Compensation Amount"
+    comp_key_uscore = "Compensation_Amount"
+    if not collected.get(comp_key_space) and not collected.get(comp_key_uscore):
+        comp_val = compute_compensation_amount(collected)
+        if comp_val:
+            collected[comp_key_space] = comp_val
+            collected[comp_key_uscore] = comp_val
+            _sessions[session_id] = collected
+
+    # ensure Claim Status default
+    if not collected.get("Claim Status") and not collected.get("Claim_Status"):
+        collected["Claim Status"] = "New Claim"
+        collected["Claim_Status"] = "New Claim"
+        _sessions[session_id] = collected
+
     clean_data = {k: v for k, v in collected.items() if not k.startswith('claim_status_step')}
-    
     return {
         "session_id": session_id,
         "collected_data": clean_data,
@@ -1385,76 +1658,101 @@ async def submit_final_claim(request: Request):
     """
     try:
         data = await request.json()
-        session_id = data.get("session_id")
-        
-        if not session_id or session_id not in _sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        # Get collected data and any updates from form
-        session_data = _sessions[session_id]
-        updated_data = data.get("claim_data", {})
-        
-        # Merge session data with form updates
-        final_data = {**session_data, **updated_data}
-        
-        # Remove internal fields
-        clean_data = {k: v for k, v in final_data.items() 
-                     if not k.startswith('claim_status_step') and k != 'uploaded_documents'}
-        
-        # Get uploaded documents
-        documents = session_data.get('uploaded_documents', [])
-        
-        if not ZOHO_ENABLED:
-            # For testing without Zoho, just return success
-            return {
-                "success": True,
-                "message": "Claim submitted successfully (test mode)",
-                "claim_id": f"TEST_{session_id[:8]}",
-                "documents_count": len(documents)
-            }
-        
-        # Submit to Zoro CRM
-        from .zoho_client import ZohoCRM
-        zoho = ZohoCRM()
-        
-        # Create contact
-        contact_payload = {}
-        if email := clean_data.get("Contact Email"):
-            contact_payload["Email"] = email
-            name = clean_data.get("Passenger Name", "").strip()
-            if name:
-                parts = name.split()
-                contact_payload["First_Name"] = parts[0]
-                contact_payload["Last_Name"] = parts[-1] if len(parts) > 1 else parts[0]
-        
-        contact_id = zoho.create_or_update_contact(contact_payload) if contact_payload else None
-        
-        # Create claim
-        claim_payload = {k: v for k, v in clean_data.items() if v is not None}
-        if contact_id:
-            claim_payload["Contact_Name"] = contact_id
-        
-        claim_id = zoho.create_claim(claim_payload)
-        
-        # TODO: Upload documents to Zoho (if API supports it)
-        # For now, documents are stored locally
-        
-        # Clean up session
-        del _sessions[session_id]
-        
-        return {
-            "success": True,
-            "message": "Claim submitted successfully",
-            "claim_id": claim_id,
-            "contact_id": contact_id,
-            "documents_count": len(documents)
-        }
-        
-    except Exception as e:
-        print(f"Error submitting final claim: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json body")
 
+    session_id = data.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="missing session_id")
+
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    # Get collected data and any updates from form
+    session_data = _sessions.get(session_id, {}) or {}
+    updated_data = data.get("claim_data") or {}
+
+    # Merge session data with form updates (updated_data has priority)
+    final_data = {**session_data, **updated_data}
+
+    # Remove internal fields
+    clean_data = {k: v for k, v in final_data.items() if not k.startswith("claim_status_step") and k != "uploaded_documents"}
+
+    # Ensure Claim Status defaults to New Claim when missing or user said 'no'
+    if not clean_data.get("Claim Status") and not clean_data.get("Claim_Status"):
+        clean_data["Claim Status"] = "New Claim"
+        clean_data["Claim_Status"] = "New Claim"
+
+    # Ensure compensation amount exists (compute if missing)
+    if not clean_data.get("Compensation Amount") and not clean_data.get("Compensation_Amount"):
+        comp_val = compute_compensation_amount(clean_data)
+        if comp_val:
+            clean_data["Compensation Amount"] = comp_val
+            clean_data["Compensation_Amount"] = comp_val
+
+    # Uploaded documents (if any)
+    documents = session_data.get("uploaded_documents", [])
+
+    # If Zoho integration disabled, return test response
+    if not ZOHO_ENABLED:
+        print("Zoho disabled - would send:", clean_data)
+        # Clear session for test flow
+        try:
+            del _sessions[session_id]
+        except Exception:
+            pass
+        return {"success": True, "message": "Claim submitted (test mode)", "claim_id": f"TEST_{session_id[:8]}", "documents_count": len(documents)}
+
+    # Build Zoho payload: normalize keys to underscore form expected by zoho_client
+    zoho_payload = {}
+    for k, v in clean_data.items():
+        if v is None:
+            continue
+        key = k.replace(" ", "_")
+        zoho_payload[key] = v
+
+    # Submit to Zoho using central client
+    try:
+        from .zoho_client import zoho_client
+    except Exception:
+        raise HTTPException(status_code=500, detail="zoho client not available")
+
+    try:
+# Create the lead and attach documents
+        claim_id = zoho_client.create_lead(zoho_payload)
+    except Exception as e:
+        print("Zoho create_lead error:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail="failed to create lead in Zoho")
+
+    if not claim_id:
+        raise HTTPException(status_code=502, detail="Zoho returned no id for created lead")
+
+    # Attach documents if any
+    docs_uploaded = 0
+    for doc in documents:
+        try:
+            path = doc.get("file_path")
+            if path and os.path.exists(path):
+                ok = zoho_client.attach_file_to_lead(claim_id, path, doc.get("original_name") or os.path.basename(path))
+                if ok:
+                    docs_uploaded += 1
+        except Exception as e:
+            print("attach_file error for", doc, e)
+
+    # Clean up session
+    try:
+        del _sessions[session_id]
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": "Claim submitted successfully",
+        "claim_id": claim_id,
+        "documents_uploaded": docs_uploaded,
+        "documents_total": len(documents),
+    }
 # Add compensation estimate endpoint used by claim_review.html
 @app.post("/estimate-compensation")
 def estimate_compensation(payload: Dict[str, Any] = Body(...)):

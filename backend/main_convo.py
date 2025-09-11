@@ -3,18 +3,38 @@ Main conversation configuration and flow for the Voice Claims system.
 This module contains all conversation prompts, field mappings, and dialogue logic.
 """
 
-# Field prompts for collecting claim information
+# CLAIM_FIELDS defines the exact fields the voice flow will collect (order matters).
+CLAIM_FIELDS = [
+    "Passenger_Name",
+    "Booking_Reference",
+    "Flight_Number",
+    "Flight_Date",
+    "Departure_Airport",
+    "Departure_time",
+    "Arrival_Airport",
+    "Arrival_time",
+    "Delay_Hours",
+    "Compensation_Amount",
+    "Claim_Status",
+    "Airline",           # airline name
+    "Airline_Response"   # collect airline response last
+]
+
+# Friendly prompts to ask for each field (used by the voice flow)
 FIELD_PROMPTS = {
-    "Passenger Name": "What's your full name as it appears on your ticket?",
-    "Contact Email": "It's quite unfair you had to go through all of that, please type in your email address into the text bar, We'll use it to contact you about your claim.",
-    "Flight Number": "What's your flight number? It usually looks like BA123.",
-    "Flight Date": "When was your flight?",
+    "Passenger_Name": "What's your full name as it appears on your ticket?",
+    "Booking_Reference": "Please tell me your booking reference or reservation code.",
+    "Flight_Number": "What's your flight number? For example, BA123.",
+    "Flight_Date": "When was your flight? Please give the date.",
+    "Departure_Airport": "Which airport did you depart from (name or IATA code)?",
+    "Departure_time": "What time did the flight depart (local time)?",
+    "Arrival_Airport": "Which airport were you supposed to arrive at (name or IATA code)?",
+    "Arrival_time": "What time were you supposed to arrive (local time)?",
+    "Delay_Hours": "Roughly how many hours was your flight delayed?",
+    "Compensation_Amount": "If you know it, what's the compensation amount offered so far (or leave blank)?",
+    "Claim_Status": "What's the current status of your claim (e.g., New, Pending, Resolved)?",
     "Airline": "Which airline were you flying with?",
-    "Departure Airport": "Which airport did you depart from?",
-    "Arrival Airport": "Which airport were you supposed to arrive at?",
-    "Delay Hours": "About how many hours was your flight delayed?",
-    "Airline Response": "What did the airline say about your claim?",
-    "Claim Status": "What's the current status of the claim?"
+    "Airline_Response": "Finally, what did the airline say about your claim? Please describe their response."
 }
 
 # Example prompts for clarification when user input is unclear
