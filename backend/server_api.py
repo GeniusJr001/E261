@@ -1,24 +1,36 @@
+from __future__ import annotations
+
+import os
+import re
+import io
+import sys
+import json
+import math
+import uuid
+import wave
+import hashlib
+import traceback
+import tempfile
+import datetime
+import subprocess
+import mimetypes
+import shutil
+import platform
+from functools import lru_cache
+from typing import Dict, Optional, List, Any, Tuple
+
+import requests
+import fastapi
+import pydantic
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request, Form
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Optional, List
-import os, tempfile, requests, shutil, uuid
-import sys, os, traceback
-import mimetypes
-import subprocess
-import re
-import datetime
-import hashlib
-import platform
-import fastapi
-import pydantic
-from functools import lru_cache
-try:
-    from dateutil import parser as dateutil_parser
-except Exception:
-    dateutil_parser = None
+from dotenv import load_dotenv
+
+# Load environment once
+load_dotenv()
 
 def parse_date_from_text(text: str) -> Optional[str]:
     """
@@ -126,13 +138,7 @@ def parse_date_from_text(text: str) -> Optional[str]:
     # remove ordinal suffixes like "23rd" -> "23"
     t_nosuf = re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', t, flags=re.I)
 
-    # Try dateutil first if present (best chance to handle wordy forms)
-    if dateutil_parser:
-        try:
-            dt = dateutil_parser.parse(t_nosuf, fuzzy=True, dayfirst=False)
-            return dt.date().isoformat()
-        except Exception:
-            pass
+    # Try dateutil first if
 
     # month map
     month_names = {
@@ -425,16 +431,14 @@ def sanitize_passenger_name(name: str) -> str:
     cleaned = " ".join(parts)
     return cleaned
 
-# new: robust import of helpers + fallback CLAIM_FIELDS
+# Import optional helpers and provide fallbacks
 try:
     from .helpers import CLAIM_FIELDS, quick_pattern_extract
 except Exception as _e:
     print(f"[startup] helpers import failed or missing: {_e} -- falling back to defaults")
     try:
-        # try to import from main_convo if helpers absent
         from .main_convo import CLAIM_FIELDS as CLAIM_FIELDS  # type: ignore
     except Exception:
-        # final fallback default list (order: Airline_Response should be last)
         CLAIM_FIELDS = [
             "Passenger Name",
             "Contact Email",
@@ -452,22 +456,42 @@ except Exception as _e:
             "Airline Response"
         ]
 
+# Try to import a compensation helper if present; otherwise we'll provide a local estimator wrapper
+try:
+    from .compensation import estimate_claim_by_iata
+except Exception:
+    def estimate_claim_by_iata(origin_iata: str, dest_iata: str, delay_hours: float) -> Dict[str, Any]:
+        """Fallback estimator that uses local airportsdata/haversine logic.
+        Returns a dict: {distance_km, delay_hours, compensation}
+        """
+        coords_a = _get_airport_coords(origin_iata)
+        coords_b = _get_airport_coords(dest_iata)
+        if not coords_a or not coords_b:
+            raise ValueError("Could not resolve one or both IATA codes to coordinates")
+        dist_km = _haversine_km(coords_a[0], coords_a[1], coords_b[0], coords_b[1])
+        comp = 0.0
+        if dist_km <= 1500:
+            if delay_hours >= 3:
+                comp = 250.0
+        elif dist_km <= 3500:
+            if delay_hours >= 3:
+                comp = 400.0
+        else:
+            if delay_hours >= 4:
+                comp = 600.0
+        return {"distance_km": round(dist_km, 2), "delay_hours": delay_hours, "compensation": f"€{comp:.2f}"}
+
 # env
-ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
-#ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "large")  # adapt if needed
-ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "scribe_v1")  # default to supported ElevenLabs STT model
-# back-compat for old/legacy values
+ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY", "")
+ELEVEN_STT_MODEL = os.getenv("ELEVEN_STT_MODEL", "scribe_v1")
 if ELEVEN_STT_MODEL and ELEVEN_STT_MODEL.lower() in ("large", "large-v1", "large_v1"):
     ELEVEN_STT_MODEL = "scribe_v1"
-ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
-
+ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "")
 ZOHO_ENABLED = bool(os.getenv("ZOHO_CLIENT_ID") and os.getenv("ZOHO_CLIENT_SECRET") and os.getenv("ZOHO_REFRESH_TOKEN"))
 
 app = FastAPI(title="E261 voice backend API")
 
 # Enable CORS for frontend during development
-from dotenv import load_dotenv
-
 # Load environment variables
 load_dotenv()
 
@@ -483,6 +507,8 @@ origins = [
     "https://geniusjr001.github.io/E261",
     "https://github.com",
     "https://*.github.io",
+    "https://e261-voice-backend.onrender.com",
+    "https://localhost:3000",
     "*",  # Temporarily allow all origins for debugging
     FRONTEND_URL,  # Environment-specific URL
 ]
@@ -644,186 +670,140 @@ def stt(file: UploadFile = File(...)):
         except Exception:
             pass
 
-# Simple in-memory cache for TTS audio
-TTS_CACHE = {}
-
-def _make_dummy_mp3():
-    # Minimal MP3-like header + silence padding for fallback
-    return b"\xff\xfb\x90\x00" + b"\x00" * 1024
+# simple in-memory TTS cache
+TTS_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _detect_media_type_from_bytes(b: bytes) -> str:
-    # Simple magic checks: WAV (RIFF), MP3 (ID3 or 0xFF 0xFB frame)
-    if len(b) >= 12 and b[0:4] == b"RIFF" and b[8:12] == b"WAVE":
-        return "audio/wav"
-    if len(b) >= 3 and b[0:3] == b"ID3":
-        return "audio/mpeg"
-    # Check for MP3 frame sync (0xFF Ex)
-    if len(b) >= 2 and (b[0] & 0xFF) == 0xFF and (b[1] & 0xE0) == 0xE0:
-        return "audio/mpeg"
-    # fallback
+    # Simple magic checks: WAV (RIFF), MP3 (ID3 or frame sync)
+    try:
+        if len(b) >= 12 and b[0:4] == b"RIFF" and b[8:12] == b"WAVE":
+            return "audio/wav"
+        if len(b) >= 3 and b[0:3] == b"ID3":
+            return "audio/mpeg"
+        if len(b) >= 2 and (b[0] & 0xFF) == 0xFF and (b[1] & 0xE0) == 0xE0:
+            return "audio/mpeg"
+    except Exception:
+        pass
     return "application/octet-stream"
 
 
-def cached_tts(text: str) -> tuple[bytes, str]:
+def _generate_silent_wav(duration_sec: float = 0.6, sample_rate: int = 16000, channels: int = 1, sampwidth: int = 2) -> bytes:
+    """Return bytes for a short silent WAV file."""
+    n_frames = int(duration_sec * sample_rate)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(sampwidth)
+        wf.setframerate(sample_rate)
+        silence_frame = (0).to_bytes(sampwidth, byteorder="little", signed=True)
+        wf.writeframes(silence_frame * n_frames * channels)
+    return buf.getvalue()
+
+
+def cached_tts(text: str) -> Tuple[bytes, str]:
     """
-    TTS with simple caching. Returns (audio bytes, media_type).
-    Cache key is MD5 hash of text.
+    Return (audio_bytes, media_type). Accept WAV or MP3 from ElevenLabs and pass through.
+    Fall back to local TTS or a short silent WAV.
     """
-    print(f"[cached_tts] Starting TTS for text: {text[:50]}...")  # Debug logging
-    try:
-        # Create cache key
-        text_hash = hashlib.md5(text.encode()).hexdigest()
-        print(f"[cached_tts] Text hash: {text_hash}")  # Debug logging
+    key = hashlib.md5(text.encode("utf-8")).hexdigest()
+    if key in TTS_CACHE:
+        c = TTS_CACHE[key]
+        return c["bytes"], c["media_type"]
 
-        # Check cache first
-        if text_hash in TTS_CACHE:
-            cached = TTS_CACHE[text_hash]
-            if isinstance(cached, tuple) and len(cached) == 2:
-                print(f"[cached_tts] Cache hit (tuple)! Returning cached audio")
-                return cached
-            media = _detect_media_type_from_bytes(cached)
-            print(f"[cached_tts] Cache hit (legacy bytes). Detected media: {media}")
-            return cached, media
-
-        # Check environment variables
-        print(f"[cached_tts] Checking env vars - API Key: {bool(ELEVEN_API_KEY)}, Voice ID: {bool(ELEVEN_VOICE_ID)}")
-        if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
-            print(f"[cached_tts] Missing env vars - API Key: {bool(ELEVEN_API_KEY)}, Voice ID: {bool(ELEVEN_VOICE_ID)}")
-            # Return dummy audio instead of failing
-            dummy_audio = _make_dummy_mp3()
-            print(f"[cached_tts] Returning dummy audio due to missing env vars")
-            return dummy_audio, "audio/mpeg"
-
-        print(f"[cached_tts] Making API call to ElevenLabs...")  # Debug logging
-        print(f"[cached_tts] Voice ID: {ELEVEN_VOICE_ID}")  # Debug logging
-        print(f"[cached_tts] API Key length: {len(ELEVEN_API_KEY)}")  # Debug logging
-
-        # Make API call to ElevenLabs
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
-        headers = {
-            "xi-api-key": ELEVEN_API_KEY,
-            "Accept": "audio/mpeg, audio/wav, */*",
-            "Content-Type": "application/json",
-        }
-        body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
-
-        print(f"[cached_tts] Making request to: {url}")  # Debug logging
-        resp = requests.post(url, headers=headers, json=body, timeout=30)
-
-        print(f"[cached_tts] ElevenLabs response: {resp.status_code}")  # Debug logging
+    # Try ElevenLabs if configured (accept WAV or MP3)
+    if ELEVEN_API_KEY and ELEVEN_VOICE_ID:
         try:
-            print(f"[cached_tts] ElevenLabs Content-Type: {resp.headers.get('Content-Type')}")
-            preview = resp.content[:64]
-            print(f"[cached_tts] ElevenLabs resp.content preview (hex len={len(resp.content)}): {preview.hex()}")
-        except Exception as _e:
-            print(f"[cached_tts] Could not preview resp.content: {_e}")
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
+            headers = {
+                "xi-api-key": ELEVEN_API_KEY,
+                "Accept": "audio/wav, audio/mpeg;q=0.9, */*",
+                "Content-Type": "application/json",
+            }
+            body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
+            print(f"[cached_tts] Requesting ElevenLabs TTS for text hash={key} len={len(text)}")
+            resp = requests.post(url, headers=headers, json=body, timeout=30)
+            print(f"[cached_tts] ElevenLabs status={resp.status_code} content-type={resp.headers.get('Content-Type')}")
+            try:
+                preview = resp.content[:64]
+                print(f"[cached_tts] preview hex len={len(resp.content)}: {preview.hex()}")
+            except Exception:
+                pass
+            if resp.status_code == 200 and resp.content:
+                audio_bytes = resp.content
+                ct = (resp.headers.get("content-type") or "").lower()
+                # WAV detection
+                if audio_bytes[:4] == b"RIFF" or "wav" in ct:
+                    media_type = "audio/wav"
+                elif audio_bytes[:3] == b"ID3" or (len(audio_bytes) > 1 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0) or "mpeg" in ct or "mp3" in ct:
+                    media_type = "audio/mpeg"
+                else:
+                    media_type = _detect_media_type_from_bytes(audio_bytes)
 
-        if resp.status_code != 200:
-            print(f"[cached_tts] ElevenLabs error: {resp.status_code} {resp.text[:200]}")  # Debug logging
-            # Return dummy audio instead of failing completely
-            dummy_audio = _make_dummy_mp3()
-            print(f"[cached_tts] Returning dummy audio due to ElevenLabs error")
-            return dummy_audio, "audio/mpeg"
+                if media_type:
+                    TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
+                    return audio_bytes, media_type
+        except Exception:
+            traceback.print_exc()
 
-        audio_bytes = resp.content
-        media_type = resp.headers.get("Content-Type") or _detect_media_type_from_bytes(audio_bytes)
-        # Normalize common content-type values
-        if media_type and ";" in media_type:
-            media_type = media_type.split(";")[0].strip()
-
-        print(f"[cached_tts] Received audio: {len(audio_bytes)} bytes, media_type={media_type}")  # Debug logging
-
-        # Cache the result as tuple
-        TTS_CACHE[text_hash] = (audio_bytes, media_type)
-
-        return audio_bytes, media_type
-
-    except HTTPException:
-        # Re-raise HTTPExceptions as-is
-        raise
-    except Exception as e:
-        print(f"[cached_tts] Unexpected error: {str(e)}")  # Debug logging
-        import traceback
-        traceback.print_exc()
-        # Return dummy audio instead of failing completely
-        dummy_audio = _make_dummy_mp3()
-        print(f"[cached_tts] Returning dummy audio due to exception")
-        return dummy_audio, "audio/mpeg"
-
-@app.post("/tts-test")
-def tts_test(payload: dict):
-    """
-    Test TTS endpoint that returns dummy audio to test the infrastructure
-    """
-    print(f"[TTS-TEST] Called with payload: {payload}")
+    # Local pyttsx3 fallback if available (optional)
     try:
-        text = payload.get("text", "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="missing text")
-        
-        # Return dummy MP3 header bytes to test the response format
-        dummy_mp3_bytes = b'\xff\xfb\x90\x00' + b'\x00' * 100  # Minimal MP3 header + padding
-        
-        print(f"[TTS-TEST] Returning dummy audio: {len(dummy_mp3_bytes)} bytes")
-        return StreamingResponse(iter([dummy_mp3_bytes]), media_type="audio/mpeg")
-        
-    except Exception as e:
-        print(f"[TTS-TEST] Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        from .server_api import _tts_with_pyttsx3  # keep backwards compatibility if defined elsewhere
+    except Exception:
+        _tts_with_pyttsx3 = None
+
+    if _tts_with_pyttsx3:
+        try:
+            local = _tts_with_pyttsx3(text)
+            if local:
+                TTS_CACHE[key] = {"bytes": local, "media_type": "audio/wav"}
+                return local, "audio/wav"
+        except Exception:
+            pass
+
+    # Final safe fallback: short silent WAV
+    audio = _generate_silent_wav()
+    TTS_CACHE[key] = {"bytes": audio, "media_type": "audio/wav"}
+    return audio, "audio/wav"
+
+from fastapi import Body
+from starlette.responses import StreamingResponse
 
 @app.post("/tts")
-def tts(payload: dict):
+def tts(payload: Dict[str, Any] = Body(...)):
     """
-    Text-to-speech endpoint.
-    Accepts JSON:
-      - {"text":"..."} to synthesize arbitrary text
-      - {"field":"Passenger Name"} to synthesize a configured prompt from main_convo.FIELD_PROMPTS
-    Returns audio stream with the correct media type (audio/wav or audio/mpeg).
+    Text-to-speech endpoint supporting either:
+      - {"text": "..."} to synthesize arbitrary text
+      - {"field": "Passenger Name"} to synthesize a configured prompt from main_convo.FIELD_PROMPTS
+    Returns audio stream with the detected media type and Content-Length header.
     """
-    print(f"[TTS] Endpoint called with payload: {payload}")  # Debug logging
     try:
         # prefer explicit field -> map to main_convo prompt when available
-        text = None
+        text: Optional[str] = None
         if isinstance(payload, dict):
             field_key = payload.get("field")
             if field_key and main_convo:
-                # field_key may be friendly or underscore form; try both
                 prompts = getattr(main_convo, "FIELD_PROMPTS", None) or {}
-                # try exact key, then normalized variants
                 text = prompts.get(field_key) or prompts.get(field_key.replace("_", " ")) or None
-                # also allow a helper get_field_prompt if main_convo provides one
                 if not text and hasattr(main_convo, "get_field_prompt"):
                     try:
                         text = main_convo.get_field_prompt(field_key)
                     except Exception:
                         text = None
 
-            # fallback to raw text
             if not text:
                 text = (payload.get("text") or "").strip()
 
-        # final validation
         if not text:
-            print("[TTS] Error: Empty text provided")
             raise HTTPException(status_code=400, detail="missing text or field")
 
-        print(f"[TTS] Processing text (len={len(text)}): {text[:80]}...")  # Debug logging
-
         audio_bytes, media_type = cached_tts(text)
-
-        print(f"[TTS] Returning audio: {len(audio_bytes)} bytes, media_type={media_type}")  # Debug logging
-
-        # ensure correct media type fallback
-        return StreamingResponse(iter([audio_bytes]), media_type=media_type or "application/octet-stream")
-
+        headers = {"Content-Length": str(len(audio_bytes))}
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type or "application/octet-stream", headers=headers)
     except HTTPException:
         raise
     except Exception as e:
         print(f"[TTS] Unexpected error: {e}")
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -848,9 +828,11 @@ def tts_prompt(field: str):
         raise HTTPException(status_code=404, detail=f"Prompt for '{field}' not found")
     try:
         audio_bytes, media_type = cached_tts(text)
-        return StreamingResponse(iter([audio_bytes]), media_type=media_type or "application/octet-stream")
+        headers = {"Content-Length": str(len(audio_bytes))}
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type or "application/octet-stream", headers=headers)
     except Exception as e:
         print(f"[tts-prompt] error synthesizing '{field}': {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/submit-claim")
@@ -1589,9 +1571,11 @@ async def submit_final_claim(request: Request):
         raise HTTPException(status_code=500, detail="zoho client not available")
 
     try:
+# Create the lead and attach documents
         claim_id = zoho_client.create_lead(zoho_payload)
     except Exception as e:
         print("Zoho create_lead error:", e)
+        traceback.print_exc()
         raise HTTPException(status_code=502, detail="failed to create lead in Zoho")
 
     if not claim_id:
@@ -1622,4 +1606,81 @@ async def submit_final_claim(request: Request):
         "documents_uploaded": docs_uploaded,
         "documents_total": len(documents),
     }
+# Add compensation estimate endpoint used by claim_review.html
+@app.post("/estimate-compensation")
+def estimate_compensation(payload: Dict[str, Any] = Body(...)):
+    """
+    Expects JSON: { "origin_iata": "LHR", "dest_iata": "CDG", "delay_hours": 4.5 }
+    Returns: JSON with distance, delay_hours and compensation dict from estimate_claim_by_iata
+    """
+    try:
+        origin = (payload.get("origin_iata") or "").strip().upper()
+        dest = (payload.get("dest_iata") or "").strip().upper()
+        delay_hours = float(payload.get("delay_hours", 0) or 0)
 
+        if not origin or not dest:
+            raise HTTPException(status_code=400, detail="origin_iata and dest_iata are required")
+
+        result = estimate_claim_by_iata(origin, dest, delay_hours)
+        return JSONResponse(content=result)
+
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[estimate-compensation] Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# Reserve key and default first prompt text (used by frontend as the initial audio)
+_FIRST_PROMPT_KEY = "__first_prompt__"
+FIRST_PROMPT_TEXT = (
+    "Hi, welcome to 261 Claims. I understand how frustrating flight delays can be, "
+    "and I’m here to help you resolve it. Let’s get started."
+)
+
+def _generate_and_cache_first_prompt() -> Tuple[bytes, str]:
+    """
+    Generate the 'first prompt' audio and store it in the TTS_CACHE under a reserved key.
+    Returns (audio_bytes, media_type).
+    """
+    audio_bytes, media_type = cached_tts(FIRST_PROMPT_TEXT)
+    TTS_CACHE[_FIRST_PROMPT_KEY] = {"bytes": audio_bytes, "media_type": media_type}
+    return audio_bytes, media_type
+
+@app.on_event("startup")
+def _startup_prepare_first_prompt() -> None:
+    """
+    Ensure the first prompt is generated at server startup so the frontend can fetch it immediately.
+    """
+    try:
+        _generate_and_cache_first_prompt()
+    except Exception:
+        traceback.print_exc()
+
+@app.get("/first-prompt")
+def first_prompt():
+    """
+    Return pre-generated initial audio (first prompt). If missing, generate on demand.
+    """
+    entry = TTS_CACHE.get(_FIRST_PROMPT_KEY)
+    if entry:
+        audio = entry["bytes"]
+        media_type = entry.get("media_type", "audio/wav")
+    else:
+        audio, media_type = _generate_and_cache_first_prompt()
+    return StreamingResponse(io.BytesIO(audio), media_type=media_type, headers={"Content-Length": str(len(audio))})
+
+@app.post("/trigger-first")
+def trigger_first():
+    """
+    Regenerate the first prompt immediately (useful after changing voice ID / env).
+    """
+    try:
+        _generate_and_cache_first_prompt()
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
