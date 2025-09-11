@@ -394,6 +394,7 @@
         let accumulatedTranscript = '';  // New: accumulate transcripts across utterances
         let silenceTimeout;  // New: timeout for detecting end of speech
         let currentTimeout = 2500;  // Default silence timeout
+        let audioContext = null;  // Global AudioContext for speaker access
         
         // DOM elements
         const landingPage = document.getElementById('landingPage');
@@ -485,12 +486,46 @@
             startConversation().catch(()=>{});
          }
          
+        // Initialize audio context and request speaker access
+        async function initializeAudioAccess() {
+            try {
+                // Create AudioContext to ensure audio playback capability
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx && !audioContext) {
+                    audioContext = new AudioCtx();
+                    // Resume context if suspended (required by some browsers)
+                    if (audioContext.state === 'suspended') {
+                        await audioContext.resume();
+                    }
+                    console.log('[AUDIO] AudioContext initialized, state:', audioContext.state);
+                }
+                
+                // Test audio playback capability with a silent buffer
+                if (audioContext) {
+                    const buffer = audioContext.createBuffer(1, 1, 22050);
+                    const source = audioContext.createBufferSource();
+                    source.buffer = buffer;
+                    source.connect(audioContext.destination);
+                    source.start();
+                    console.log('[AUDIO] Test audio played successfully');
+                }
+                
+                return true;
+            } catch (error) {
+                console.warn('[AUDIO] Failed to initialize audio access:', error);
+                return false;
+            }
+        }
+         
         async function startConversation() {
             try {
                 console.log('[START] Requesting mic access');
                 // Request mic access immediately after user gesture (before TTS)
                 await navigator.mediaDevices.getUserMedia({ audio: true });
                 console.log('[START] Mic access granted');
+                
+                // Initialize audio context for speaker access
+                await initializeAudioAccess();
                 
                 const res = await fetch(`${BACKEND}/conversation/start`, { method: 'POST' });
                 if (!res.ok) return;
@@ -795,6 +830,12 @@
             if (!text) return;
             console.log('[TTS] Starting for text:', text);
             try {
+                // Ensure audio context is ready
+                if (audioContext && audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                    console.log('[TTS] AudioContext resumed');
+                }
+                
                 // Pause recognition during AI speech
                 if (window.recognition && window.isRecognizing) {
                     window.recognition.stop();
@@ -812,6 +853,10 @@
                 console.log('[TTS] Blob size:', blob.size);
                 const audioUrl = URL.createObjectURL(blob);
                 const audio = new Audio(audioUrl);
+                
+                // Set volume and ensure audio is not muted
+                audio.volume = 1.0;
+                audio.muted = false;
                 
                 // Ensure audio is fully loaded before playing
                 audio.preload = 'auto';
