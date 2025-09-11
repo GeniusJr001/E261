@@ -319,22 +319,6 @@
         .hidden {
             display: none !important;
         }
-
-        /* Live Transcript Styles */
-        .live-transcript {
-            position: absolute;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-            padding: 10px 20px;
-            border-radius: 25px;
-            backdrop-filter: blur(10px);
-            font-size: 14px;
-            font-weight: 500;
-            z-index: 30;
-        }
     </style>
 </head>
 <body>
@@ -373,9 +357,6 @@
             
             <div id="statusText" class="status-text">Click the orb or press the microphone to start speaking</div>
             
-            <!-- Add this to the chat page for live transcript -->
-            <div id="liveTranscript" class="live-transcript">Live Transcript: ...</div>
-            
             <div class="input-container">
                 <input type="text" id="textInput" class="text-input" placeholder="Type your message or use voice...">
                 <button id="voiceBtn" class="voice-btn">🎤</button>
@@ -408,7 +389,6 @@
         const sendBtn = document.getElementById('sendBtn');
         const textInput = document.getElementById('textInput');
         const statusText = document.getElementById('statusText');
-        const liveTranscript = document.getElementById('liveTranscript');
         
         // backend base (dev -> localhost:8000, prod -> deployed API)
         const BACKEND = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? 'http://127.0.0.1:8000' : 'https://e261-voice-backend.onrender.com';
@@ -602,12 +582,6 @@
         // Remove update to text input; only show in live transcript above orb
         // const input = document.getElementById('textInput');
         // if (input) input.value = accumulatedTranscript + interimTranscript;
-
-        // Update live transcript display
-        const liveTranscript = document.getElementById('liveTranscript');
-        if (liveTranscript) {
-            liveTranscript.textContent = 'Live Transcript: ' + accumulatedTranscript + interimTranscript;
-        }
 
         // Update status with current timeout
         statusText.textContent = 'Listening... (Sending in ' + (currentTimeout / 1000) + 's)';
