@@ -778,162 +778,49 @@ def cached_tts(text: str) -> tuple[bytes, str]:
         print(f"[cached_tts] Returning dummy audio due to exception")
         return dummy_audio, "audio/mpeg"
 
-# simple in-memory TTS cache
-TTS_CACHE: Dict[str, Dict[str, Any]] = {}
+from fastapi import Body
+from fastapi import query
+from starlette.responses import StreamingResponse
 
+@app.get("/tts-stream")
+def tts_stream(text: str = Query(...)):
+    if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+        raise HTTPException(status_code=500, detail="ElevenLabs not configured")
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream"
+    headers = {
+        "xi-api-key": ELEVEN_API_KEY,
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+    }
+    body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
 
-def _detect_media_type_from_bytes(b: bytes) -> str:
-    # Simple magic checks: WAV (RIFF), MP3 (ID3 or frame sync)
     try:
-        if len(b) >= 12 and b[0:4] == b"RIFF" and b[8:12] == b"WAVE":
-            return "audio/wav"
-        if len(b) >= 3 and b[0:3] == b"ID3":
-            return "audio/mpeg"
-        if len(b) >= 2 and (b[0] & 0xFF) == 0xFF and (b[1] & 0xE0) == 0xE0:
-            return "audio/mpeg"
-    except Exception:
-        pass
-    return "application/octet-stream"
+        r = requests.post(url, headers=headers, json=body, timeout=60, stream=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"ElevenLabs conn error: {e}")
 
+    if r.status_code != 200:
+        err_text = r.text[:300] if hasattr(r, "text") else str(r.status_code)
+        raise HTTPException(status_code=502, detail=f"ElevenLabs error: {err_text}")
 
-def _generate_silent_wav(duration_sec: float = 0.6, sample_rate: int = 16000, channels: int = 1, sampwidth: int = 2) -> bytes:
-    """Return bytes for a short silent WAV file."""
-    n_frames = int(duration_sec * sample_rate)
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(sampwidth)
-        wf.setframerate(sample_rate)
-        silence_frame = (0).to_bytes(sampwidth, byteorder="little", signed=True)
-        wf.writeframes(silence_frame * n_frames * channels)
-    return buf.getvalue()
+    media_type = r.headers.get("Content-Type", "audio/mpeg")
+    headers_out = {}
+    if "Content-Length" in r.headers:
+        headers_out["Content-Length"] = r.headers["Content-Length"]
 
-
-def _generate_tone_wav(duration_sec: float = 0.6, sample_rate: int = 16000, freq: float = 600.0, channels: int = 1, sampwidth: int = 2) -> bytes:
-    """Return bytes for a short audible sine-wave WAV (useful as an unmistakable fallback)."""
-    n_frames = int(duration_sec * sample_rate)
-    buf = io.BytesIO()
-    max_amp = (2 ** (sampwidth * 8 - 1)) - 1
-    amp = int(max_amp * 0.25)
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(sampwidth)
-        wf.setframerate(sample_rate)
-        for i in range(n_frames):
-            t = i / sample_rate
-            sample = int(amp * math.sin(2 * math.pi * freq * t))
-            wf.writeframes(sample.to_bytes(sampwidth, byteorder="little", signed=True) * channels)
-    return buf.getvalue()
-
-
-def cached_tts(text: str) -> Tuple[bytes, str]:
-    """
-    Return (audio_bytes, media_type). Accept WAV or MP3 from ElevenLabs and pass through.
-    Fall back to local TTS or a short silent WAV.
-    """
-    key = hashlib.md5(text.encode("utf-8")).hexdigest()
-    if key in TTS_CACHE:
-        c = TTS_CACHE[key]
-        return c["bytes"], c["media_type"]
-
-    # Try ElevenLabs if configured (accept WAV or MP3)
-    if ELEVEN_API_KEY and ELEVEN_VOICE_ID:
+    def gen():
         try:
-            # Prefer the non-streaming TTS endpoint and request MP3 by default to avoid broken zero-filled WAV streams
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
-            headers = {
-                "xi-api-key": ELEVEN_API_KEY,
-                "Accept": "audio/mpeg, audio/wav;q=0.9, */*",
-                "Content-Type": "application/json",
-            }
-            body = {"text": text, "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}}
-            print(f"[cached_tts] Requesting ElevenLabs TTS for text hash={key} len={len(text)}")
-            resp = requests.post(url, headers=headers, json=body, timeout=30)
-            print(f"[cached_tts] ElevenLabs status={resp.status_code} content-type={resp.headers.get('Content-Type')}")
+            for chunk in r.iter_content(chunk_size=16384):
+                if chunk:
+                    yield chunk
+        finally:
             try:
-                preview = resp.content[:256]
-                print(f"[cached_tts] preview hex len={len(resp.content)}: {preview.hex()}")
+                r.close()
             except Exception:
                 pass
 
-            if resp.status_code == 200 and resp.content:
-                audio_bytes = resp.content
-                ct = (resp.headers.get("content-type") or "").lower()
-                # WAV detection
-                if audio_bytes[:4] == b"RIFF" or "wav" in ct:
-                    # If payload is WAV, ensure it's not all-zero PCM (common broken response)
-                    media_type = "audio/wav"
-                    if len(audio_bytes) > 44:
-                        payload = audio_bytes[44:]
-                        try:
-                            if all(b == 0 for b in payload):
-                                print("[cached_tts] Detected all-zero WAV payload from ElevenLabs (silent). Attempting MP3 retry...")
-                                # Try retrying the request asking for MP3 to work around streaming WAV issues
-                                try:
-                                    headers_mp3 = headers.copy()
-                                    headers_mp3["Accept"] = "audio/mpeg, audio/*;q=0.9"
-                                    resp2 = requests.post(url, headers=headers_mp3, json=body, timeout=30)
-                                    print(f"[cached_tts] Retry status={getattr(resp2, 'status_code', 'NA')} content-type={resp2.headers.get('Content-Type') if resp2 is not None else 'NA'}")
-                                    if resp2 is not None and resp2.status_code == 200 and resp2.content:
-                                        audio_bytes2 = resp2.content
-                                        ct2 = (resp2.headers.get('Content-Type') or '').lower()
-                                        # If mp3-ish content, accept it
-                                        if audio_bytes2[:3] == b'ID3' or (len(audio_bytes2) > 1 and audio_bytes2[0] == 0xFF and (audio_bytes2[1] & 0xE0) == 0xE0) or 'mpeg' in ct2 or 'mp3' in ct2:
-                                            media_type = 'audio/mpeg'
-                                            audio_bytes = audio_bytes2
-                                            TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
-                                            return audio_bytes, media_type
-                                except Exception as _e:
-                                    print(f"[cached_tts] MP3 retry failed: {_e}")
-                                # If retry didn't work, save debug file for inspection
-                                try:
-                                    tf = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
-                                    tf.write(audio_bytes)
-                                    tf.flush()
-                                    tf.close()
-                                    print(f"[cached_tts] Saved suspicious WAV to: {tf.name}")
-                                except Exception:
-                                    pass
-                                # intentionally don't cache the all-zero WAV; fall through to fallback generators
-                                audio_bytes = None
-                                media_type = None
-                        except Exception:
-                            pass
-                elif audio_bytes[:3] == b"ID3" or (len(audio_bytes) > 1 and audio_bytes[0] == 0xFF and (audio_bytes[1] & 0xE0) == 0xE0) or "mpeg" in ct or "mp3" in ct:
-                    media_type = "audio/mpeg"
-                else:
-                    media_type = _detect_media_type_from_bytes(audio_bytes)
-
-                if audio_bytes and media_type:
-                    TTS_CACHE[key] = {"bytes": audio_bytes, "media_type": media_type}
-                    return audio_bytes, media_type
-        except Exception:
-            traceback.print_exc()
-
-    # Local pyttsx3 fallback if available (optional)
-    try:
-        from .server_api import _tts_with_pyttsx3  # keep backwards compatibility if defined elsewhere
-    except Exception:
-        _tts_with_pyttsx3 = None
-
-    if _tts_with_pyttsx3:
-        try:
-            local = _tts_with_pyttsx3(text)
-            if local:
-                TTS_CACHE[key] = {"bytes": local, "media_type": "audio/wav"}
-                return local, "audio/wav"
-        except Exception:
-            pass
-
-    # Final audible fallback: short tone WAV so playback is noticeable while debugging
-    audio = _generate_tone_wav()
-    TTS_CACHE[key] = {"bytes": audio, "media_type": "audio/wav"}
-    print("[cached_tts] Returning audible tone fallback (debug)")
-    return audio, "audio/wav"
-
-from fastapi import Body
-from starlette.responses import StreamingResponse
-
+    return StreamingResponse(gen(), media_type=media_type, headers=headers_out)
+    
 @app.post("/tts")
 def tts(payload: Dict[str, Any] = Body(...)):
     """
@@ -972,8 +859,7 @@ def tts(payload: Dict[str, Any] = Body(...)):
         print(f"[TTS] Unexpected error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-    print(f"[TTS] Endpoint called with payload: {payload}")  # Debug logging
+        print(f"[TTS] Endpoint called with payload: {payload}")  # Debug logging
     try:
         text = payload.get("text", "").strip()
         if not text:
