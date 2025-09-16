@@ -803,75 +803,68 @@
         async function playTTS(text) {
             if (!text) return;
             console.log('[TTS] Starting for text:', text);
+            // pause recognition while speaking
+            if (window.recognition && window.isRecognizing) {
+                try { window.recognition.stop(); } catch(_) {}
+                }
             try {
-                // ensure/resume AudioContext
-                if (!audioContext) {
-                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                    audioContext = AudioCtx ? new AudioCtx() : null;
+                // Prefer native streaming via <audio>
+                const audio = new Audio(`${BACKEND}/tts-stream?text=${encodeURIComponent(text)}`);
+                // iOS-friendly
+                audio.setAttribute('playsinline', '');
+                audio.autoplay = true;
+                audio.muted = false;
+
+                audio.onplay = () => voiceOrb.classList.add('speaking');
+                audio.onended = () => {
+                voiceOrb.classList.remove('speaking');
+                if (window.recognition && !window.isRecognizing) {
+                    try { window.recognition.start(); } catch (_) {}
                 }
-                if (audioContext && audioContext.state === 'suspended') {
-                    await audioContext.resume();
-                    console.log('[TTS] AudioContext resumed');
+                };
+                audio.onerror = (e) => {
+                console.error('[TTS] streaming audio error', e);
+                };
+
+                await audio.play();
+                // Streaming started successfully – stop here
+                return;
+
+                } catch (streamErr) {
+                console.warn('[TTS] Streaming failed, trying non-stream fallback', streamErr);
                 }
 
-                // pause recognition while speaking
-                if (window.recognition && window.isRecognizing) {
-                    try { window.recognition.stop(); } catch(_) {}
-                }
-
+                // Fallback to non-streaming /tts (buffers full audio, then plays)
+                try {
                 const resp = await fetch(`${BACKEND}/tts`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text })
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
                 });
                 if (!resp.ok) throw new Error('TTS fetch failed: ' + resp.status);
 
-                const arrayBuffer = await resp.arrayBuffer();
-                console.log('[TTS] arrayBuffer byteLength=', arrayBuffer.byteLength);
-
-                // debug: log first 64 bytes as hex
-                try {
-                    const view = new Uint8Array(arrayBuffer.slice(0, 64));
-                    console.log('[TTS] first64hex=', Array.from(view).map(b => b.toString(16).padStart(2,'0')).join(''));
-                } catch (e) { /* ignore */ }
-
-                if (!audioContext) {
-                    // fallback to audio element if AudioContext not available
-                    const blob = new Blob([arrayBuffer], { type: resp.headers.get('content-type') || 'audio/wav' });
-                    const url = URL.createObjectURL(blob);
-                    const a = new Audio(url);
-                    a.volume = 1.0; a.muted = false;
-                    await a.play().catch(e => console.warn('[TTS] fallback play failed', e));
-                    return;
-                }
-
-                // decode & play via AudioContext (more reliable)
-                const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0));
-                const src = audioContext.createBufferSource();
-                src.buffer = decoded;
-                src.connect(audioContext.destination);
-
-                voiceOrb.classList.add('speaking');
-                statusText.textContent = '';
-
-                await new Promise((resolve) => {
-                    src.onended = () => {
-                        voiceOrb.classList.remove('speaking');
-                        if (window.recognition && !window.isRecognizing) {
-                            try { window.recognition.start(); } catch(_) {}
-                        }
-                        resolve();
-                    };
-                    try { src.start(0); } catch (e) { console.warn('[TTS] src.start failed', e); resolve(); }
-                });
-
-            } catch (err) {
-                console.error('[TTS] Error:', err);
+                // Play via Audio element (simpler, works well)
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = new Audio(url);
+                a.setAttribute('playsinline', '');
+                a.onplay = () => voiceOrb.classList.add('speaking');
+                a.onended = () => {
+                URL.revokeObjectURL(url);
                 voiceOrb.classList.remove('speaking');
                 if (window.recognition && !window.isRecognizing) {
-                    try { window.recognition.start(); } catch(_) {}
+                    try { window.recognition.start(); } catch (_) {}
                 }
-            }
+                };
+                await a.play();
+                } catch (err) {
+                console.error('[TTS] Fallback error:', err);
+                voiceOrb.classList.remove('speaking');
+                if (window.recognition && !window.isRecognizing) {
+                    try { window.recognition.start(); } catch (_) {}
+                    }
+                }
+                
         }
 
         function playAudioResponse(src) {
