@@ -779,7 +779,7 @@ def cached_tts(text: str) -> tuple[bytes, str]:
         return dummy_audio, "audio/mpeg"
 
 from fastapi import Body
-from fastapi import query
+from fastapi import Query
 from starlette.responses import StreamingResponse
 
 @app.get("/tts-stream")
